@@ -92,9 +92,16 @@ export interface AuditEntry {
   readonly error?: string | undefined
 }
 
+export interface ActStateEntry {
+  readonly ref: string
+  readonly label: string
+  readonly state: Record<string, unknown>
+}
+
 export interface ActResult {
   readonly ok: boolean
   readonly completed: number
+  readonly state: ReadonlyArray<ActStateEntry>
   readonly error?: { readonly step: number; readonly message: string } | undefined
 }
 
@@ -265,6 +272,13 @@ export const make = (options: {
     return out
   }
 
+  const visibleState = (): ReadonlyArray<ActStateEntry> =>
+    visibleEntries().map(({ tracked, contract, label }) => ({
+      ref: tracked.path,
+      label,
+      state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>
+    }))
+
   const snapshot = (): ReadonlyArray<SnapshotEntry> =>
     visibleEntries().map(({ tracked, contract, label }) => {
       const actions: Array<SnapshotAction> = []
@@ -358,6 +372,13 @@ export const make = (options: {
       const allow = callOptions?.allow ?? options.allow
       let completed = 0
 
+      const fail = (step: number, message: string): ActResult => ({
+        ok: false,
+        completed,
+        state: visibleState(),
+        error: { step, message }
+      })
+
       for (let i = 0; i < input.steps.length; i++) {
         const step = input.steps[i]!
         const visible = visibleEntries()
@@ -368,33 +389,18 @@ export const make = (options: {
             : visible.filter((v) => v.label.toLowerCase().includes(step.ref.toLowerCase()))
 
         if (matches.length === 0) {
-          return {
-            ok: false,
-            completed,
-            error: { step: i, message: `No visible control matches ref "${step.ref}"` }
-          }
+          return fail(i, `No visible control matches ref "${step.ref}"`)
         }
         if (matches.length > 1) {
           const refs = matches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-          return {
-            ok: false,
-            completed,
-            error: { step: i, message: `Ambiguous ref "${step.ref}": matched ${refs}` }
-          }
+          return fail(i, `Ambiguous ref "${step.ref}": matched ${refs}`)
         }
 
         const { tracked, contract, label } = matches[0]!
         const actionSpec = contract.actions[step.action]
         if (actionSpec === undefined) {
           const allowed = Object.keys(contract.actions).join(", ")
-          return {
-            ok: false,
-            completed,
-            error: {
-              step: i,
-              message: `Unknown action "${step.action}" on "${label}". Allowed: ${allowed}`
-            }
-          }
+          return fail(i, `Unknown action "${step.action}" on "${label}". Allowed: ${allowed}`)
         }
 
         if (actionSpec.enabled && !actionSpec.enabled(tracked.model)) {
@@ -408,11 +414,7 @@ export const make = (options: {
             ok: false,
             error: `Action "${step.action}" is currently disabled`
           })
-          return {
-            ok: false,
-            completed,
-            error: { step: i, message: `Action "${step.action}" is currently disabled` }
-          }
+          return fail(i, `Action "${step.action}" is currently disabled`)
         }
 
         const decoded = yield* Schema.decodeUnknownEffect(actionSpec.args)(step.args ?? {}, {
@@ -431,7 +433,7 @@ export const make = (options: {
             ok: false,
             error: reason
           })
-          return { ok: false, completed, error: { step: i, message: reason } }
+          return fail(i, reason)
         }
 
         const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
@@ -458,7 +460,7 @@ export const make = (options: {
             ok: false,
             error: initialRejection
           })
-          return { ok: false, completed, error: { step: i, message: initialRejection } }
+          return fail(i, initialRejection)
         }
 
         const confirmText =
@@ -480,7 +482,7 @@ export const make = (options: {
               ok: false,
               error: reason
             })
-            return { ok: false, completed, error: { step: i, message: reason } }
+            return fail(i, reason)
           }
           const approved = yield* Effect.promise(() =>
             Promise.resolve(
@@ -508,7 +510,7 @@ export const make = (options: {
               ok: false,
               error: reason
             })
-            return { ok: false, completed, error: { step: i, message: reason } }
+            return fail(i, reason)
           }
           confirmed = true
 
@@ -545,7 +547,7 @@ export const make = (options: {
               ok: false,
               error: postConfirmFailure
             })
-            return { ok: false, completed, error: { step: i, message: postConfirmFailure } }
+            return fail(i, postConfirmFailure)
           }
         }
 
@@ -563,7 +565,7 @@ export const make = (options: {
             ok: false,
             error: reason
           })
-          return { ok: false, completed, error: { step: i, message: reason } }
+          return fail(i, reason)
         }
 
         auditLog.push({
@@ -578,7 +580,7 @@ export const make = (options: {
         completed++
       }
 
-      return { ok: true, completed }
+      return { ok: true, completed, state: visibleState() }
     })
 
   const tools: AgentBridge["tools"] = (toolOptions) => {
@@ -587,7 +589,9 @@ export const make = (options: {
     const toolList: Array<ModelContextTool> = [
       {
         name: `${prefix}snapshot`,
-        description: "List visible interactive controls, their safe state, and their allowed actions with JSON Schemas.",
+        description:
+          "List visible interactive controls, their safe state, and their allowed actions with JSON Schemas. " +
+          `Call once to discover refs and action schemas; subsequent ${prefix}act calls return updated state directly.`,
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true },
         execute: async () => snapshot()
@@ -611,7 +615,11 @@ export const make = (options: {
       },
       {
         name: `${prefix}act`,
-        description: "Run one or more typed actions on visible controls in order. Destructive actions require human confirmation.",
+        description:
+          "Run one or more typed actions on visible controls in order and return every visible control's updated safe state. " +
+          "Batch independent and sequential steps into one steps array — earlier steps take effect before later steps run, " +
+          "so multi-step flows (such as editing fields, requesting and confirming an in-app step, and saving) can run in a single call once you know the target refs and IDs. " +
+          `Inspect the returned state directly instead of calling ${prefix}snapshot again. Destructive actions with a confirm gate require human approval.`,
         inputSchema: {
           type: "object",
           properties: {
