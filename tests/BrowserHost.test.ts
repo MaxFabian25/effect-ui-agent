@@ -53,6 +53,14 @@ const WorkspaceAgent = AgentBridge.expose(Workspace, {
   }
 })
 
+const ProjectRowsAgent = {
+  ...ProjectSettingsAgent,
+  rows: (model): AgentBridge.AgentRows => ({
+    status: "ready",
+    rows: [{ id: "project-name", label: model.name }]
+  })
+} satisfies typeof ProjectSettingsAgent
+
 const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A> => {
   const win = new GlobalWindow({ url: "http://localhost/" })
   const keys = [
@@ -142,7 +150,7 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
       )
 
       const AppLayer = AgentBridge.layer({
-        contracts: [WorkspaceAgent, ProjectSettingsAgent]
+        contracts: [WorkspaceAgent, ProjectRowsAgent]
       }).pipe(Layer.provide(UpstreamDevToolsLike))
 
       await Effect.runPromise(
@@ -163,6 +171,8 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
               .toThrow(/^Ambiguous action: .*found 2\.$/)
             const beta = { ref: "/Workspace/ProjectSettings[beta]", action: "setName" }
             assertActionDiscoverable(bridge, beta)
+            expect(bridge.queryRows({ ref: "Project settings" })).toEqual({ status: "unavailable" })
+            expect(bridge.queryRows({ ref: "/Workspace" })).toEqual({ status: "unavailable" })
 
             // Upstream DevTools-like layer ALSO received Controllable registration & MessageLog entries
             expect(upstreamRoots).toEqual(["/Workspace"])
@@ -193,6 +203,12 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
             const betaHeading = container.querySelector('[data-project="beta"] h1')?.textContent
             expect(alphaHeading).toBe("Default project")
             expect(betaHeading).toBe("Beta Renamed")
+            expect(bridge.queryRows({ ref: beta.ref, text: "beta" })).toEqual({
+              status: "ready", rows: [{ id: "project-name", label: "Beta Renamed" }], more: false
+            })
+            expect(bridge.queryRows({ ref: "/Workspace/ProjectSettings[alpha]", text: "beta" })).toEqual({
+              status: "ready", rows: [], more: false
+            })
 
             // Unmount child beta via parent Workspace action -> disappears from snapshot
             const removed = yield* bridge.act({
@@ -207,6 +223,8 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
             ])
             assertActionNotDiscoverable(bridge, beta)
             assertActionDiscoverable(bridge, { label: "Project settings", action: "setName" })
+            expect(bridge.queryRows({ ref: beta.ref })).toEqual({ status: "unavailable" })
+            expect(bridge.queryRows({ ref: "Project settings" })).toMatchObject({ status: "ready" })
           }).pipe(Effect.provide(AppLayer))
         )
       )

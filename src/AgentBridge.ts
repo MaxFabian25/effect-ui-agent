@@ -14,12 +14,24 @@ export interface AgentActionSpec<Model, Msg, Args = any> {
   readonly toMessage: (args: Args, meta: { readonly source: "agent" }) => Msg
 }
 
+export interface AgentRow {
+  readonly id: string
+  readonly label: string
+}
+
+type RowsNotReady = { readonly status: "loading" | "refreshing" | "failed" }
+
+export type AgentRows =
+  | { readonly status: "ready"; readonly rows: ReadonlyArray<AgentRow> }
+  | RowsNotReady
+
 export interface AgentContract<Model = any, Msg = any> {
   readonly component: Component.Any
   readonly componentName: string
   readonly label: string | ((model: Model) => string)
   readonly hidden?: ((model: Model) => boolean) | undefined
   readonly state: (model: Model) => Record<string, unknown>
+  readonly rows?: ((model: Model) => AgentRows) | undefined
   readonly actions: Record<string, AgentActionSpec<Model, Msg, any>>
 }
 
@@ -140,6 +152,23 @@ const jsonSchemaOf = (schema: Schema.Top): object => {
   return doc.schema
 }
 
+const defaultRowLimit = 10
+const maxRowLimit = 50
+const RowQuerySchema = Schema.Struct({
+  ref: Schema.String.check(Schema.isMinLength(1)),
+  text: Schema.optionalKey(Schema.String),
+  offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: maxRowLimit })))
+})
+const decodeRowQuery = Schema.decodeUnknownSync(RowQuerySchema, { onExcessProperty: "error" })
+
+export type RowQueryInput = typeof RowQuerySchema.Type
+
+export type RowQueryResult =
+  | { readonly status: "ready"; readonly rows: ReadonlyArray<AgentRow>; readonly more: boolean }
+  | RowsNotReady
+  | { readonly status: "unavailable" }
+
 export interface AgentBridge {
   readonly messageLog: MessageLog.MessageLog
   readonly registerControllable: (root: BrowserHost.Controllable) => () => void
@@ -149,6 +178,7 @@ export interface AgentBridge {
     readonly text?: string | undefined
     readonly component?: string | undefined
   }) => ReadonlyArray<SnapshotEntry>
+  readonly queryRows: (input: RowQueryInput) => RowQueryResult
   readonly act: (
     input: { readonly steps: ReadonlyArray<AgentStepInput> },
     options?: { readonly signal?: AbortSignal | undefined; readonly allow?: AllowCallback | undefined }
@@ -279,6 +309,31 @@ export const make = (options: {
           a.description.toLowerCase().includes(needle)
       )
     })
+  }
+
+  const queryRows = (input: unknown): RowQueryResult => {
+    const { ref, text, offset = 0, limit = defaultRowLimit } = decodeRowQuery(input)
+    const matches = visibleEntries().filter(({ tracked, label }) => tracked.path === ref || label === ref)
+    const [match] = matches
+    if (match === undefined || matches.length !== 1) return { status: "unavailable" }
+
+    const list = match.contract.rows?.(match.tracked.model)
+    if (list === undefined) return { status: "unavailable" }
+    if (list.status !== "ready") return { status: list.status }
+
+    const needle = text?.toLowerCase()
+    const rows: Array<AgentRow> = []
+    let skipped = 0
+    for (const { id, label } of list.rows) {
+      if (needle !== undefined && !label.toLowerCase().includes(needle) && !id.toLowerCase().includes(needle)) continue
+      if (skipped < offset) {
+        skipped++
+        continue
+      }
+      if (rows.length === limit) return { status: "ready", rows, more: true }
+      rows.push({ id, label })
+    }
+    return { status: "ready", rows, more: false }
   }
 
   const dispatchTo = (instance: number, path: string, message: unknown): Effect.Effect<boolean> =>
@@ -467,7 +522,7 @@ export const make = (options: {
   const tools: AgentBridge["tools"] = (toolOptions) => {
     const prefix = toolOptions?.prefix ?? "ui_"
     const effectiveAllow = toolOptions?.allow ?? options.allow
-    return [
+    const toolList: Array<ModelContextTool> = [
       {
         name: `${prefix}snapshot`,
         description: "List visible interactive controls, their safe state, and their allowed actions with JSON Schemas.",
@@ -524,6 +579,19 @@ export const make = (options: {
         }
       }
     ]
+    if (options.contracts.some((contract) => contract.rows !== undefined)) {
+      toolList.push({
+        name: `${prefix}query_rows`,
+        description: `Find public rows in one visible list by its exact component path or exact unique label. ` +
+          `Optionally match text against row labels or IDs. Offset counts matching rows, starting at 0. ` +
+          `The default limit is ${defaultRowLimit}, at most ${maxRowLimit}. ` +
+          `Only ready lists return rows. If more is true, add the number of returned rows to offset. This does not open a row.`,
+        inputSchema: { ...jsonSchemaOf(RowQuerySchema), additionalProperties: false },
+        annotations: { readOnlyHint: true },
+        execute: async (input) => queryRows(input)
+      })
+    }
+    return toolList
   }
 
   const registerWebMcp: AgentBridge["registerWebMcp"] = (context, regOptions) =>
@@ -554,6 +622,7 @@ export const make = (options: {
     },
     snapshot,
     query,
+    queryRows,
     act,
     audit: () => [...auditLog],
     tools,
