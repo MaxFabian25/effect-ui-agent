@@ -4,6 +4,7 @@ import { BrowserHost, Html } from "@effect/ui/html"
 import { Effect, Layer, Schema } from "effect"
 import { GlobalWindow } from "happy-dom"
 import * as AgentBridge from "../src/index.ts"
+import { assertActionDiscoverable, assertActionNotDiscoverable } from "../src/testing.ts"
 import { ProjectSettings, ProjectSettingsAgent } from "./fixtures/ProjectSettings.ts"
 
 const WorkspaceMessage = UiSchema.TaggedEnum({
@@ -158,6 +159,10 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
               "/Workspace/ProjectSettings[alpha]",
               "/Workspace/ProjectSettings[beta]"
             ])
+            expect(() => assertActionDiscoverable(bridge, { label: "Project settings", action: "setName" }))
+              .toThrow(/^Ambiguous action: .*found 2\.$/)
+            const beta = { ref: "/Workspace/ProjectSettings[beta]", action: "setName" }
+            assertActionDiscoverable(bridge, beta)
 
             // Upstream DevTools-like layer ALSO received Controllable registration & MessageLog entries
             expect(upstreamRoots).toEqual(["/Workspace"])
@@ -200,6 +205,8 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
               "/Workspace",
               "/Workspace/ProjectSettings[alpha]"
             ])
+            assertActionNotDiscoverable(bridge, beta)
+            assertActionDiscoverable(bridge, { label: "Project settings", action: "setName" })
           }).pipe(Effect.provide(AppLayer))
         )
       )

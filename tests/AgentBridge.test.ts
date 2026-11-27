@@ -4,6 +4,7 @@ import { Locator, TestHost } from "@effect/ui/testing"
 import { Effect, Layer, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import * as AgentBridge from "../src/index.ts"
+import { assertActionDiscoverable, assertActionNotDiscoverable } from "../src/testing.ts"
 import {
   ProjectSettings,
   ProjectSettingsAgent,
@@ -28,6 +29,7 @@ describe("Native Effect UI AgentBridge", () => {
           expect(snap[0]!.state.apiKey).toBe("[Redacted]")
           expect(JSON.stringify(snap)).not.toContain("sk-initial-super-secret")
           expect(snap[0]!.actions.map((a) => a.name)).toContain("setVisibility")
+          assertActionDiscoverable(bridge, { label: "Project settings", action: "setVisibility" })
 
           const queried = bridge.query({ text: "visibility" })
           expect(queried).toHaveLength(1)
@@ -88,6 +90,37 @@ describe("Native Effect UI AgentBridge", () => {
       )
     ))
 
+  test("a human-only action still works in the UI and is absent from discovery", () => {
+    const { deleteProject: _humanOnly, ...actions } = ProjectSettingsAgent.actions
+    return run(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const bridge = yield* AgentBridge.AgentBridgeService
+          const play = yield* HtmlPlay.make(ProjectSettings, {})
+          yield* AgentBridge.attachTestRoot(bridge, play.root)
+
+          assertActionDiscoverable(bridge, { label: "Project settings", action: "setName" })
+          assertActionNotDiscoverable(bridge, { label: "Project", action: "setName" })
+          assertActionNotDiscoverable(bridge, { label: "Project settings", action: "SetName" })
+          const selector = { label: "Project settings", action: "deleteProject" }
+          assertActionNotDiscoverable(bridge, selector)
+          expect(() => assertActionDiscoverable(bridge, selector)).toThrow(/^Missing action: .*found 0\.$/)
+
+          yield* play.click(HtmlLocator.role("button", { name: "Delete project" }))
+          yield* play.expect(Locator.tag("h1")).toHaveText("Deleted")
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              AgentBridge.layer({ contracts: [{ ...ProjectSettingsAgent, actions }] }),
+              TestHost.layer(),
+              TestClock.layer()
+            )
+          )
+        )
+      )
+    )
+  })
+
   test("secret actions fill Schema.Redacted fields without leaking to snapshot or audit log", () =>
     run(
       Effect.scoped(
@@ -124,6 +157,13 @@ describe("Native Effect UI AgentBridge", () => {
           const play = yield* HtmlPlay.make(ProjectSettings, {})
           yield* AgentBridge.attachTestRoot(bridge, play.root)
 
+          const selector = { label: "Project settings", action: "deleteProject" }
+          assertActionDiscoverable(bridge, selector)
+          expect(() => assertActionNotDiscoverable(bridge, selector)).toThrow(
+            /^Unexpected exposure: expected no advertised matches by exact label; found 1\.$/
+          )
+          expect(bridge.audit()).toEqual([])
+
           yield* bridge.act({
             steps: [{ ref: "Project settings", action: "setName", args: { name: "Atlas" } }]
           })
@@ -158,7 +198,7 @@ describe("Native Effect UI AgentBridge", () => {
           )
           expect(approved.ok).toBe(true)
           expect(play.root.model()!.deleted).toBe(true)
-          expect(bridge.snapshot()[0]!.actions.map((a) => a.name)).not.toContain("deleteProject")
+          assertActionNotDiscoverable(bridge, selector)
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

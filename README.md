@@ -86,6 +86,26 @@ if ("modelContext" in document && document.modelContext) {
 
 Under `TestHost` and `HtmlPlay`, attach the mounted test root with `attachTestRoot(bridge, play.root)` to run `snapshot()`, `query()`, `act()`, and WebMCP tests without a browser.
 
+Use `effect-ui-agent/testing` to assert what the mounted bridge advertises in a given screen state:
+
+```ts
+import { assertActionDiscoverable, assertActionNotDiscoverable } from "effect-ui-agent/testing"
+
+assertActionDiscoverable(bridge, { label: "Project settings", action: "setName" })
+assertActionNotDiscoverable(bridge, { label: "Project settings", action: "showRecoveryCodes" })
+```
+
+The assertions require exactly one match or zero matches, respectively. The action name and
+target are exact and case-sensitive. If multiple targets share a label, use the full snapshot
+`ref` in place of `label`, for example `{ ref: "/Workspace/ProjectSettings[beta]", action: "setName" }`.
+Supply the expected target and action from the test scenario. Pair an absence check with a
+positive check when you also need to verify that the intended component is mounted and visible.
+
+The helpers work with any test runner. They read `snapshot()` synchronously and distinguish
+missing actions, ambiguous matches, and unexpected exposure without printing snapshot contents.
+A confirmation-gated action can still be discoverable. Test dispatch, authorisation, and the
+resulting UI separately with `act()`.
+
 For multi-level component trees with nested child dispatch, mount with `BrowserHost.mountEffect` in `happy-dom` (see `tests/BrowserHost.test.ts`), because `BrowserHost.Controllables` exposes `root.instance(id)` for every nested child whereas `TestHost.Root` currently exposes `root.send` only on the root.
 
 ## Development
