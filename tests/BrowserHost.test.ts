@@ -196,7 +196,10 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
                 }
               ]
             })
-            expect(renamed).toEqual({ ok: true, completed: 1 })
+            expect(renamed).toMatchObject({ ok: true, completed: 1 })
+            expect(
+              renamed.state.find((e) => e.ref === "/Workspace/ProjectSettings[beta]")?.state.name
+            ).toBe("Beta Renamed")
             yield* Effect.promise(nextFrame)
 
             const alphaHeading = container.querySelector('[data-project="alpha"] h1')?.textContent
@@ -214,7 +217,7 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
             const removed = yield* bridge.act({
               steps: [{ ref: "Workspace", action: "removeProject", args: { key: "beta" } }]
             })
-            expect(removed).toEqual({ ok: true, completed: 1 })
+            expect(removed).toMatchObject({ ok: true, completed: 1 })
             yield* Effect.promise(nextFrame)
 
             expect(bridge.snapshot().map((e) => e.ref).sort()).toEqual([

@@ -155,7 +155,7 @@ describe("AgentActionSpec.check", () => {
               { ref: "Review queue", action: "openRow", args: { id: "live" } }
             ]
           })
-          expect(batch).toEqual({
+          expect(batch).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: "This review is no longer in the queue. Search again." }
@@ -178,7 +178,11 @@ describe("AgentActionSpec.check", () => {
           const fresh = yield* bridge.act({
             steps: [{ ref: "Review queue", action: "openRow", args: { id: "live" } }]
           })
-          expect(fresh).toEqual({ ok: true, completed: 1 })
+          expect(fresh).toMatchObject({
+            ok: true,
+            completed: 1,
+            state: [{ ref: "/QueueWidget", label: "Review queue", state: { selectedId: "live", deletedIds: [] } }]
+          })
           expect(play.root.model()!.selectedId).toBe("live")
           expect(play.root.model()!.dispatches).toBe(1)
         })
@@ -203,10 +207,11 @@ describe("AgentActionSpec.check", () => {
               { ref: "Review queue", action: "openRow", args: { id: "live" } }
             ]
           })
-          expect(result).toEqual({
+          expect(result).toMatchObject({
             ok: false,
             completed: 1,
-            error: { step: 1, message: "This review is no longer in the queue. Search again." }
+            error: { step: 1, message: "This review is no longer in the queue. Search again." },
+            state: [{ ref: "/QueueWidget", label: "Review queue", state: { selectedId: "live", deletedIds: [] } }]
           })
           expect(play.root.model()!.selectedId).toBe("live")
           expect(play.root.model()!.dispatches).toBe(1)
@@ -260,7 +265,7 @@ describe("AgentActionSpec.check", () => {
               }
             }
           )
-          expect(rejectedBeforeConfirm).toEqual({
+          expect(rejectedBeforeConfirm).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: "This review is no longer in the queue. Search again." }
@@ -284,7 +289,7 @@ describe("AgentActionSpec.check", () => {
             }
           )
           expect(allowCalls).toBe(1)
-          expect(vanishedDuringApproval).toEqual({
+          expect(vanishedDuringApproval).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: "This review is no longer in the queue. Search again." }
@@ -308,7 +313,7 @@ describe("AgentActionSpec.check", () => {
               }
             }
           )
-          expect(disabledDuringApproval).toEqual({
+          expect(disabledDuringApproval).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: 'Action "deleteRow" is currently disabled' }
@@ -336,6 +341,7 @@ describe("AgentActionSpec.check", () => {
           expect(hiddenDuringApproval).toEqual({
             ok: false,
             completed: 0,
+            state: [],
             error: { step: 0, message: 'No visible control matches ref "Review queue"' }
           })
           expect(play.root.model()!.deletedIds).toEqual([])
@@ -366,11 +372,12 @@ describe("AgentActionSpec.check", () => {
               }
             ]
           })
-          expect(secretFail).toEqual({
+          expect(secretFail).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: "Unknown target row." }
           })
+          expect(JSON.stringify(secretFail)).not.toContain("sk-must-never-leak")
           expect(JSON.stringify(bridge.audit())).not.toContain("sk-must-never-leak")
           expect(bridge.audit().at(-1)).toMatchObject({
             action: "setSecretToken",
@@ -383,7 +390,7 @@ describe("AgentActionSpec.check", () => {
           const blankFail = yield* bridge.act({
             steps: [{ ref: "Review queue", action: "blankRejection" }]
           })
-          expect(blankFail).toEqual({
+          expect(blankFail).toMatchObject({
             ok: false,
             completed: 0,
             error: { step: 0, message: 'Action "blankRejection" cannot run with these arguments' }
@@ -395,7 +402,7 @@ describe("AgentActionSpec.check", () => {
               { ref: "Review queue", action: "ping" }
             ]
           })
-          expect(repeats).toEqual({ ok: true, completed: 2 })
+          expect(repeats).toMatchObject({ ok: true, completed: 2 })
         })
       )
     ))
@@ -454,7 +461,7 @@ describe("AgentActionSpec.check", () => {
                 }
               }
             )
-            expect(labelChanged).toEqual({
+            expect(labelChanged).toMatchObject({
               ok: false,
               completed: 0,
               error: {
@@ -486,6 +493,7 @@ describe("AgentActionSpec.check", () => {
             expect(hiddenWhileApproving).toEqual({
               ok: false,
               completed: 0,
+              state: [],
               error: { step: 0, message: 'No visible control matches ref "Project B"' }
             })
             expect(play.root.model()!.deletedIds).toEqual([])
@@ -532,7 +540,7 @@ describe("AgentActionSpec.check", () => {
                 }
               }
             )
-            expect(confirmChanged).toEqual({
+            expect(confirmChanged).toMatchObject({
               ok: false,
               completed: 0,
               error: {

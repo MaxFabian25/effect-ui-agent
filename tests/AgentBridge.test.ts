@@ -41,7 +41,25 @@ describe("Native Effect UI AgentBridge", () => {
               { ref: "Project settings", action: "setWeeklyDigest", args: { enabled: true } }
             ]
           })
-          expect(result).toEqual({ ok: true, completed: 3 })
+          expect(result).toEqual({
+            ok: true,
+            completed: 3,
+            state: [
+              {
+                ref: "/ProjectSettings",
+                label: "Project settings",
+                state: {
+                  name: "Atlas",
+                  visibility: "internal",
+                  weeklyDigest: true,
+                  deleted: false,
+                  hasApiKey: true,
+                  apiKey: "[Redacted]"
+                }
+              }
+            ]
+          })
+          expect(JSON.stringify(result)).not.toContain("sk-initial-super-secret")
 
           yield* play.expect(Locator.tag("h1")).toHaveText("Atlas")
           yield* play.expect(HtmlLocator.role("textbox", { name: "Project name" })).toHaveValue("Atlas")
@@ -133,6 +151,8 @@ describe("Native Effect UI AgentBridge", () => {
             steps: [{ ref: "Project settings", action: "setApiKey", args: { apiKey: "sk-live-98765" } }]
           })
           expect(result.ok).toBe(true)
+          expect(JSON.stringify(result)).not.toContain("sk-live-98765")
+          expect(result.state[0]!.state.apiKey).toBe("[Redacted]")
           expect(Redacted.value(play.root.model()!.apiKey)).toBe("sk-live-98765")
           expect(JSON.stringify(bridge.snapshot())).not.toContain("sk-live-98765")
           expect(JSON.stringify(bridge.audit())).not.toContain("sk-live-98765")
@@ -237,6 +257,7 @@ describe("Native Effect UI AgentBridge", () => {
             steps: [{ ref: "Project settings", action: "setWeeklyDigest", args: { enabled: true } }]
           })
           expect(hiddenAttempt.ok).toBe(false)
+          expect(hiddenAttempt.state).toEqual([])
           expect(hiddenAttempt.error?.message).toContain("No visible control")
         }).pipe(
           Effect.provide(
@@ -283,7 +304,17 @@ describe("Native Effect UI AgentBridge", () => {
               steps: [{ ref: "Project settings", action: "setName", args: { name: "Via WebMCP" } }]
             })
           )
-          expect(res).toEqual({ ok: true, completed: 1 })
+          expect(res).toMatchObject({
+            ok: true,
+            completed: 1,
+            state: [
+              {
+                ref: "/ProjectSettings",
+                label: "Project settings",
+                state: { name: "Via WebMCP", apiKey: "[Redacted]" }
+              }
+            ]
+          })
           expect(play.root.model()!.name).toBe("Via WebMCP")
         }).pipe(
           Effect.provide(
