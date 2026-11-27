@@ -1,0 +1,102 @@
+# effect-ui-agent
+
+A production end-user agent bridge and WebMCP layer for [`@effect/ui`](https://github.com/Effect-TS/ui).
+
+`@effect/ui-devtools` gives developer agents access to raw message logs and time-travel debugging on loopback. `effect-ui-agent` solves the production counterpart: letting an embedded assistant or a browser agent (via WebMCP `document.modelContext`) read safe component state and run allow-listed, Schema-validated user actions with human confirmation gates and `Schema.Redacted` secret protection.
+
+## Properties
+
+- **Fail-closed component contracts.** Components opt in via `expose(Component, spec)` with a label, optional `hidden(model)` predicate, projected `state(model)`, and an explicit `actions` map. Internal messages such as popup toggles are never exposed.
+- **Schema boundary validation and JSON Schema.** Each action declares an Effect `Schema`. `snapshot()` generates draft-2020-12 JSON Schemas via `Schema.toJsonSchemaDocument`, and `act()` decodes inputs with `{ onExcessProperty: "error" }`.
+- **Write-only secrets with `Schema.Redacted`.** Actions that accept secrets use `Schema.RedactedFromValue(Schema.String)` and `secret: true`. `AgentBridge` recursively scrubs any `Redacted` value in `snapshot()` and redacts secret arguments in its audit log.
+- **Live-Model confirmation gates.** `confirm: (model, args) => string` computes confirmation text from the current Model. Confirmed actions fail closed when no `allow` callback is supplied and abort cleanly when the user declines.
+- **Agent source awareness.** Actions pass `{ source: "agent" }` into `toMessage` so `update` can distinguish and refuse agent edits under workspace policy while human interactions still work.
+- **Coexistence with `@effect/ui-devtools`.** `layer()` chains onto any upstream `MessageLog.MessageLog` (via `MessageLog.fanoutAll`) and `BrowserHost.Controllables`, so both `AgentBridge` and `DevTools.layer()` receive every mounted root and log entry.
+- **Scoped WebMCP registration.** `registerWebMcp(document.modelContext, { prefix, allow })` registers `snapshot`, `query`, and `act` tools and aborts every registration when the Effect `Scope` closes.
+
+## Usage
+
+```ts
+import { BrowserHost } from "@effect/ui/html"
+import { Effect, Layer, Redacted, Schema } from "effect"
+import * as AgentBridge from "effect-ui-agent"
+import { ProjectSettings, SettingsMessage, Visibility } from "./ProjectSettings.ts"
+
+const ProjectSettingsAgent = AgentBridge.expose(ProjectSettings, {
+  label: "Project settings",
+  hidden: (model) => model.showingRecoveryCodes,
+  state: (model) => ({
+    name: model.name,
+    visibility: model.visibility,
+    hasApiKey: Redacted.value(model.apiKey).length > 0
+  }),
+  actions: {
+    setName: {
+      description: "Rename the project",
+      args: Schema.Struct({ name: Schema.String.check(Schema.isMinLength(1)) }),
+      toMessage: ({ name }, { source }) => SettingsMessage.UpdatedName({ name, source })
+    },
+    setVisibility: {
+      description: "Change project visibility",
+      args: Schema.Struct({ visibility: Visibility }),
+      toMessage: ({ visibility }, { source }) =>
+        SettingsMessage.PickedVisibility({ visibility, source })
+    },
+    setApiKey: {
+      description: "Update the project API key (write-only secret)",
+      secret: true,
+      args: Schema.Struct({ apiKey: Schema.RedactedFromValue(Schema.String) }),
+      toMessage: ({ apiKey }, { source }) => SettingsMessage.UpdatedApiKey({ apiKey, source })
+    },
+    deleteProject: {
+      description: "Permanently delete the project and all its files",
+      confirm: (model) => `Deletes "${model.name}" and all its files`,
+      enabled: (model) => !model.deleted,
+      args: Schema.Struct({}),
+      toMessage: (_args, { source }) => SettingsMessage.DeletedProject({ source })
+    }
+  }
+})
+
+const Main = BrowserHost.mount(ProjectSettings, {}, document.getElementById("app")!).pipe(
+  Layer.provide(
+    AgentBridge.layer({
+      contracts: [ProjectSettingsAgent],
+      allow: (request) => window.confirm(request.confirm)
+    })
+  )
+)
+
+Effect.runFork(Layer.launch(Main))
+```
+
+To expose the bridge to browser agents through WebMCP:
+
+```ts
+const bridge = yield* AgentBridge.AgentBridgeService
+if ("modelContext" in document && document.modelContext) {
+  yield* bridge.registerWebMcp(document.modelContext, {
+    prefix: "app_",
+    allow: (request) => askUser(request.confirm)
+  })
+}
+```
+
+## Testing
+
+Under `TestHost` and `HtmlPlay`, attach the mounted test root with `attachTestRoot(bridge, play.root)` to run `snapshot()`, `query()`, `act()`, and WebMCP tests without a browser.
+
+For multi-level component trees with nested child dispatch, mount with `BrowserHost.mountEffect` in `happy-dom` (see `tests/BrowserHost.test.ts`), because `BrowserHost.Controllables` exposes `root.instance(id)` for every nested child whereas `TestHost.Root` currently exposes `root.send` only on the root.
+
+## Development
+
+```sh
+bun install
+bun run check
+bun run build
+bun test
+```
+
+## License
+
+MIT

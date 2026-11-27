@@ -1,0 +1,40 @@
+{
+  "name": "effect-ui-agent",
+  "version": "0.1.0",
+  "description": "Production end-user agent bridge and WebMCP layer for @effect/ui",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "bun@1.4.5",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MaxFabian25/effect-ui-agent.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@effect/ui": "*",
+    "effect": "^4.1.4"
+  },
+  "devDependencies": {
+    "@effect/ui": "https://pkg.pr.new/Effect-TS/ui/@effect/ui@fb618d4",
+    "@effect/ui-kit": "https://pkg.pr.new/Effect-TS/ui/@effect/ui-kit@fb618d4",
+    "@types/bun": "1.4.5",
+    "effect": "4.1.5",
+    "happy-dom": "21.0.4",
+    "typescript": "5.9.3"
+  }
+}
