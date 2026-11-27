@@ -82,6 +82,29 @@ if ("modelContext" in document && document.modelContext) {
 }
 ```
 
+## Find rows in one visible list
+
+Add `rows(model)` to a component contract to make its list searchable. Return only public string `id` and `label` values with `status: "ready"`. Use each record's stable ID, so rows with the same label remain distinct. For a list that is not ready, return `status: "loading"`, `"refreshing"`, or `"failed"` without rows.
+
+```ts
+const ReviewQueueAgent = AgentBridge.expose(ReviewQueue, {
+	label: "Review queue",
+	state: () => ({}),
+	rows: ({ status, reviews }) => status === "ready"
+		? { status, rows: reviews.map(({ id, name }) => ({ id, label: name })) }
+		: { status },
+	actions: {}
+})
+
+bridge.queryRows({ ref: "Review queue", text: "Payroll", limit: 5 })
+```
+
+`queryRows` requires an exact component path or an exact unique visible label. A caller that knows the label can search without taking a snapshot. For a label shared by several lists, use the exact `ref` from `snapshot()` or `query()`. An absent, hidden, ambiguous, or non-opted-in component returns `{ status: "unavailable" }`.
+
+Text matches a case-insensitive substring of the row's ID or label. Results stay in the order supplied by the contract. `offset` counts matching rows and defaults to `0`. `limit` defaults to `10` and accepts integers from `1` to `50`. Invalid inputs raise a `SchemaError`. For a ready result, `more` indicates whether another page of matches exists. When `more` is true, add the number of returned rows to `offset` for the next request. Each request reads the current list. A successful search with no matches returns `{ status: "ready", rows: [], more: false }`.
+
+When at least one contract opts in, WebMCP adds the read-only `ui_query_rows` tool with the same input and result. A configured tool prefix replaces `ui_`. Looking up rows does not dispatch an action or change what `snapshot()` and `query()` return. Use `act()` separately if the component exposes an action for a row.
+
 ## Testing
 
 Under `TestHost` and `HtmlPlay`, attach the mounted test root with `attachTestRoot(bridge, play.root)` to run `snapshot()`, `query()`, `act()`, and WebMCP tests without a browser.
