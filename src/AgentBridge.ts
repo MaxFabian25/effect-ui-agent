@@ -11,6 +11,7 @@ export interface AgentActionSpec<Model, Msg, Args = any> {
   readonly secret?: boolean | undefined
   readonly confirm?: string | ((model: Model, args: Args) => string) | undefined
   readonly enabled?: ((model: Model) => boolean) | undefined
+  readonly check?: ((model: Model, args: Args) => string | undefined) | undefined
   readonly toMessage: (args: Args, meta: { readonly source: "agent" }) => Msg
 }
 
@@ -435,6 +436,31 @@ export const make = (options: {
 
         const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
 
+        const checkModel = (model: unknown): string | undefined => {
+          if (actionSpec.check === undefined) return undefined
+          const rejection = actionSpec.check(model, decoded.success)
+          if (rejection === undefined) return undefined
+          const trimmed = rejection.trim()
+          return trimmed.length > 0
+            ? trimmed
+            : `Action "${step.action}" cannot run with these arguments`
+        }
+
+        const initialRejection = checkModel(tracked.model)
+        if (initialRejection !== undefined) {
+          auditLog.push({
+            ref: tracked.path,
+            label,
+            action: step.action,
+            secret: actionSpec.secret === true,
+            args: safeArgs,
+            confirmed: false,
+            ok: false,
+            error: initialRejection
+          })
+          return { ok: false, completed, error: { step: i, message: initialRejection } }
+        }
+
         const confirmText =
           typeof actionSpec.confirm === "function"
             ? actionSpec.confirm(tracked.model, decoded.success)
@@ -485,6 +511,42 @@ export const make = (options: {
             return { ok: false, completed, error: { step: i, message: reason } }
           }
           confirmed = true
+
+          syncAll()
+          const current = instances.get(tracked.instance)
+          let postConfirmFailure: string | undefined
+          if (current === undefined || contract.hidden?.(current.model) === true) {
+            postConfirmFailure = `No visible control matches ref "${step.ref}"`
+          } else if (actionSpec.enabled && !actionSpec.enabled(current.model)) {
+            postConfirmFailure = `Action "${step.action}" is currently disabled`
+          } else {
+            const recheck = checkModel(current.model)
+            if (recheck !== undefined) {
+              postConfirmFailure = recheck
+            } else {
+              const currentLabel = labelOf(contract, current.model)
+              const currentConfirmText =
+                typeof actionSpec.confirm === "function"
+                  ? actionSpec.confirm(current.model, decoded.success)
+                  : actionSpec.confirm
+              if (currentLabel !== label || currentConfirmText !== confirmText) {
+                postConfirmFailure = `Approval for "${step.action}" on "${label}" is stale because the target changed. Ask the person again.`
+              }
+            }
+          }
+          if (postConfirmFailure !== undefined) {
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: step.action,
+              secret: actionSpec.secret === true,
+              args: safeArgs,
+              confirmed: true,
+              ok: false,
+              error: postConfirmFailure
+            })
+            return { ok: false, completed, error: { step: i, message: postConfirmFailure } }
+          }
         }
 
         const msg = actionSpec.toMessage(decoded.success, { source: "agent" })
