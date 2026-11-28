@@ -26,11 +26,39 @@ export type AgentRows =
   | { readonly status: "ready"; readonly rows: ReadonlyArray<AgentRow> }
   | RowsNotReady
 
+export interface AgentRevealSpec<Model = any> {
+  /** Target ref (path or label) of the container control that reveals this control. */
+  readonly container: string | ((model: Model) => string)
+  /** Action name on `container` that opens or reveals this control. */
+  readonly action: string
+  /** Optional arguments passed to `container`'s reveal action. */
+  readonly args?: Record<string, unknown> | ((model: Model) => Record<string, unknown>) | undefined
+  /** Optional human-readable explanation of how the control is revealed. */
+  readonly description?: string | undefined
+}
+
+export interface ResolvedRevealSpec {
+  readonly container: string
+  readonly action: string
+  readonly args?: Record<string, unknown> | undefined
+  readonly description?: string | undefined
+}
+
 export interface AgentContract<Model = any, Msg = any> {
   readonly component: Component.Any
   readonly componentName: string
   readonly label: string | ((model: Model) => string)
   readonly hidden?: ((model: Model) => boolean) | undefined
+  /**
+   * Declares how a closed container (such as a Tab, Accordion, or Dialog) can
+   * reveal this control while `hidden(model)` is `true`. Controls with
+   * `revealedBy` are discoverable in `snapshot()` with `hidden: true` (and
+   * empty state) and automatically revealed before executing in `act()`.
+   */
+  readonly revealedBy?:
+    | AgentRevealSpec<Model>
+    | ((model: Model) => AgentRevealSpec<Model> | undefined)
+    | undefined
   readonly state: (model: Model) => Record<string, unknown>
   readonly rows?: ((model: Model) => AgentRows) | undefined
   readonly actions: Record<string, AgentActionSpec<Model, Msg, any>>
@@ -60,6 +88,8 @@ export interface SnapshotEntry {
   readonly label: string
   readonly state: Record<string, unknown>
   readonly actions: ReadonlyArray<SnapshotAction>
+  readonly hidden?: true | undefined
+  readonly revealedBy?: ResolvedRevealSpec | undefined
 }
 
 export interface AgentStepInput {
@@ -98,10 +128,17 @@ export interface ActStateEntry {
   readonly state: Record<string, unknown>
 }
 
+export interface ActRevealRecord {
+  readonly container: string
+  readonly action: string
+  readonly target: string
+}
+
 export interface ActResult {
   readonly ok: boolean
   readonly completed: number
   readonly state: ReadonlyArray<ActStateEntry>
+  readonly revealed?: ReadonlyArray<ActRevealRecord> | undefined
   readonly error?: { readonly step: number; readonly message: string } | undefined
 }
 
@@ -155,6 +192,27 @@ const scrubRedacted = (value: unknown): unknown => {
 const labelOf = (contract: AgentContract, model: unknown): string =>
   typeof contract.label === "function" ? contract.label(model) : contract.label
 
+const resolveRevealOf = (
+  contract: AgentContract,
+  model: unknown
+): ResolvedRevealSpec | undefined => {
+  const raw =
+    typeof contract.revealedBy === "function"
+      ? contract.revealedBy(model)
+      : contract.revealedBy
+  if (raw === undefined) return undefined
+  const container =
+    typeof raw.container === "function" ? raw.container(model) : raw.container
+  const args =
+    typeof raw.args === "function" ? raw.args(model) : raw.args
+  return {
+    container,
+    action: raw.action,
+    ...(args !== undefined ? { args: scrubRedacted(args) as Record<string, unknown> } : {}),
+    ...(raw.description !== undefined ? { description: raw.description } : {})
+  }
+}
+
 const jsonSchemaOf = (schema: Schema.Top): object => {
   const doc = Schema.toJsonSchemaDocument(schema)
   return doc.schema
@@ -181,10 +239,13 @@ export interface AgentBridge {
   readonly messageLog: MessageLog.MessageLog
   readonly registerControllable: (root: BrowserHost.Controllable) => () => void
   readonly attachDispatcher: (dispatcher: Dispatcher) => () => void
-  readonly snapshot: () => ReadonlyArray<SnapshotEntry>
+  readonly snapshot: (options?: {
+    readonly includeHidden?: boolean | undefined
+  }) => ReadonlyArray<SnapshotEntry>
   readonly query: (filter: {
     readonly text?: string | undefined
     readonly component?: string | undefined
+    readonly includeHidden?: boolean | undefined
   }) => ReadonlyArray<SnapshotEntry>
   readonly queryRows: (input: RowQueryInput) => RowQueryResult
   readonly act: (
@@ -272,6 +333,30 @@ export const make = (options: {
     return out
   }
 
+  const discoverableHiddenEntries = (): ReadonlyArray<{
+    readonly tracked: TrackedInstance
+    readonly contract: AgentContract
+    readonly label: string
+    readonly revealedBy: ResolvedRevealSpec
+  }> => {
+    syncAll()
+    const out: Array<{
+      readonly tracked: TrackedInstance
+      readonly contract: AgentContract
+      readonly label: string
+      readonly revealedBy: ResolvedRevealSpec
+    }> = []
+    for (const tracked of instances.values()) {
+      const contract = byComponent.get(tracked.componentRef)
+      if (contract === undefined) continue
+      if (contract.hidden?.(tracked.model) !== true) continue
+      const revealedBy = resolveRevealOf(contract, tracked.model)
+      if (revealedBy === undefined) continue
+      out.push({ tracked, contract, label: labelOf(contract, tracked.model), revealedBy })
+    }
+    return out
+  }
+
   const visibleState = (): ReadonlyArray<ActStateEntry> =>
     visibleEntries().map(({ tracked, contract, label }) => ({
       ref: tracked.path,
@@ -279,45 +364,62 @@ export const make = (options: {
       state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>
     }))
 
-  const snapshot = (): ReadonlyArray<SnapshotEntry> =>
-    visibleEntries().map(({ tracked, contract, label }) => {
-      const actions: Array<SnapshotAction> = []
-      for (const [name, spec] of Object.entries(contract.actions)) {
-        if (spec.enabled && !spec.enabled(tracked.model)) continue
-        const confirm =
-          typeof spec.confirm === "string"
-            ? spec.confirm
-            : typeof spec.confirm === "function"
-              ? spec.confirm(tracked.model, {})
-              : undefined
-        actions.push({
-          name,
-          description: spec.description,
-          inputSchema: jsonSchemaOf(spec.args),
-          ...(confirm !== undefined ? { confirm } : {}),
-          ...(spec.secret === true ? { secret: true } : {})
-        })
-      }
-      return {
+  const snapshotActionsOf = (contract: AgentContract, model: unknown): ReadonlyArray<SnapshotAction> => {
+    const actions: Array<SnapshotAction> = []
+    for (const [name, spec] of Object.entries(contract.actions)) {
+      if (spec.enabled && !spec.enabled(model)) continue
+      const confirm =
+        typeof spec.confirm === "string"
+          ? spec.confirm
+          : typeof spec.confirm === "function"
+            ? spec.confirm(model, {})
+            : undefined
+      actions.push({
+        name,
+        description: spec.description,
+        inputSchema: jsonSchemaOf(spec.args),
+        ...(confirm !== undefined ? { confirm } : {}),
+        ...(spec.secret === true ? { secret: true } : {})
+      })
+    }
+    return actions
+  }
+
+  const snapshot: AgentBridge["snapshot"] = (snapOptions) => {
+    const includeHidden = snapOptions?.includeHidden ?? true
+    const visible: Array<SnapshotEntry> = visibleEntries().map(({ tracked, contract, label }) => ({
+      ref: tracked.path,
+      instance: tracked.instance,
+      component: tracked.component,
+      label,
+      state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>,
+      actions: snapshotActionsOf(contract, tracked.model)
+    }))
+    if (!includeHidden) return visible
+
+    const hidden: Array<SnapshotEntry> = discoverableHiddenEntries().map(
+      ({ tracked, contract, label, revealedBy }) => ({
         ref: tracked.path,
         instance: tracked.instance,
         component: tracked.component,
         label,
-        state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>,
-        actions
-      }
-    })
+        state: {},
+        actions: snapshotActionsOf(contract, tracked.model),
+        hidden: true,
+        revealedBy
+      })
+    )
+    return [...visible, ...hidden]
+  }
 
-  const query = (filter: {
-    readonly text?: string | undefined
-    readonly component?: string | undefined
-  }): ReadonlyArray<SnapshotEntry> => {
+  const query: AgentBridge["query"] = (filter) => {
     const needle = filter.text?.toLowerCase()
-    return snapshot().filter((entry) => {
+    return snapshot({ includeHidden: filter.includeHidden }).filter((entry) => {
       if (filter.component !== undefined && entry.component !== filter.component) return false
       if (needle === undefined) return true
       if (entry.label.toLowerCase().includes(needle)) return true
       if (entry.ref.toLowerCase().includes(needle)) return true
+      if (entry.revealedBy?.description?.toLowerCase().includes(needle) === true) return true
       return entry.actions.some(
         (a) =>
           a.name.toLowerCase().includes(needle) ||
@@ -367,220 +469,337 @@ export const make = (options: {
       return false
     })
 
+  const matchByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
+    entries: ReadonlyArray<T>,
+    ref: string
+  ): ReadonlyArray<T> => {
+    const exact = entries.filter((v) => v.tracked.path === ref || v.label === ref)
+    return exact.length > 0
+      ? exact
+      : entries.filter((v) => v.label.toLowerCase().includes(ref.toLowerCase()))
+  }
+
+  const MAX_REVEAL_DEPTH = 4
+
   const act: AgentBridge["act"] = (input, callOptions) =>
     Effect.gen(function*() {
       const allow = callOptions?.allow ?? options.allow
       let completed = 0
+      const reveals: Array<ActRevealRecord> = []
 
       const fail = (step: number, message: string): ActResult => ({
         ok: false,
         completed,
         state: visibleState(),
+        ...(reveals.length > 0 ? { revealed: reveals } : {}),
         error: { step, message }
       })
 
-      for (let i = 0; i < input.steps.length; i++) {
-        const step = input.steps[i]!
-        const visible = visibleEntries()
-        const exact = visible.filter((v) => v.tracked.path === step.ref || v.label === step.ref)
-        const matches =
-          exact.length > 0
-            ? exact
-            : visible.filter((v) => v.label.toLowerCase().includes(step.ref.toLowerCase()))
+      const executeSingleAction = (
+        target: {
+          readonly tracked: TrackedInstance
+          readonly contract: AgentContract
+          readonly label: string
+        },
+        stepRef: string,
+        actionName: string,
+        rawArgs: unknown
+      ): Effect.Effect<string | undefined> =>
+        Effect.gen(function*() {
+          const { tracked, contract, label } = target
+          const actionSpec = contract.actions[actionName]
+          if (actionSpec === undefined) {
+            const allowed = Object.keys(contract.actions).join(", ")
+            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`
+          }
 
-        if (matches.length === 0) {
-          return fail(i, `No visible control matches ref "${step.ref}"`)
-        }
-        if (matches.length > 1) {
-          const refs = matches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-          return fail(i, `Ambiguous ref "${step.ref}": matched ${refs}`)
-        }
-
-        const { tracked, contract, label } = matches[0]!
-        const actionSpec = contract.actions[step.action]
-        if (actionSpec === undefined) {
-          const allowed = Object.keys(contract.actions).join(", ")
-          return fail(i, `Unknown action "${step.action}" on "${label}". Allowed: ${allowed}`)
-        }
-
-        if (actionSpec.enabled && !actionSpec.enabled(tracked.model)) {
-          auditLog.push({
-            ref: tracked.path,
-            label,
-            action: step.action,
-            secret: actionSpec.secret === true,
-            args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(step.args ?? {}),
-            confirmed: false,
-            ok: false,
-            error: `Action "${step.action}" is currently disabled`
-          })
-          return fail(i, `Action "${step.action}" is currently disabled`)
-        }
-
-        const decoded = yield* Schema.decodeUnknownEffect(actionSpec.args)(step.args ?? {}, {
-          onExcessProperty: "error"
-        }).pipe(Effect.result)
-
-        if (decoded._tag === "Failure") {
-          const reason = `Invalid args for "${step.action}": ${String(decoded.failure)}`
-          auditLog.push({
-            ref: tracked.path,
-            label,
-            action: step.action,
-            secret: actionSpec.secret === true,
-            args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(step.args ?? {}),
-            confirmed: false,
-            ok: false,
-            error: reason
-          })
-          return fail(i, reason)
-        }
-
-        const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
-
-        const checkModel = (model: unknown): string | undefined => {
-          if (actionSpec.check === undefined) return undefined
-          const rejection = actionSpec.check(model, decoded.success)
-          if (rejection === undefined) return undefined
-          const trimmed = rejection.trim()
-          return trimmed.length > 0
-            ? trimmed
-            : `Action "${step.action}" cannot run with these arguments`
-        }
-
-        const initialRejection = checkModel(tracked.model)
-        if (initialRejection !== undefined) {
-          auditLog.push({
-            ref: tracked.path,
-            label,
-            action: step.action,
-            secret: actionSpec.secret === true,
-            args: safeArgs,
-            confirmed: false,
-            ok: false,
-            error: initialRejection
-          })
-          return fail(i, initialRejection)
-        }
-
-        const confirmText =
-          typeof actionSpec.confirm === "function"
-            ? actionSpec.confirm(tracked.model, decoded.success)
-            : actionSpec.confirm
-
-        let confirmed = false
-        if (confirmText !== undefined) {
-          if (allow === undefined) {
-            const reason = `Needs a person: ${confirmText}`
+          if (actionSpec.enabled && !actionSpec.enabled(tracked.model)) {
             auditLog.push({
               ref: tracked.path,
               label,
-              action: step.action,
+              action: actionName,
               secret: actionSpec.secret === true,
-              args: safeArgs,
+              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+              confirmed: false,
+              ok: false,
+              error: `Action "${actionName}" is currently disabled`
+            })
+            return `Action "${actionName}" is currently disabled`
+          }
+
+          const decoded = yield* Schema.decodeUnknownEffect(actionSpec.args)(rawArgs ?? {}, {
+            onExcessProperty: "error"
+          }).pipe(Effect.result)
+
+          if (decoded._tag === "Failure") {
+            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
               confirmed: false,
               ok: false,
               error: reason
             })
-            return fail(i, reason)
+            return reason
           }
-          const approved = yield* Effect.promise(() =>
-            Promise.resolve(
-              allow(
-                {
-                  ref: tracked.path,
-                  label,
-                  action: step.action,
-                  confirm: confirmText,
-                  args: safeArgs
-                },
-                { signal: callOptions?.signal }
+
+          const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
+
+          const checkModel = (model: unknown): string | undefined => {
+            if (actionSpec.check === undefined) return undefined
+            const rejection = actionSpec.check(model, decoded.success)
+            if (rejection === undefined) return undefined
+            const trimmed = rejection.trim()
+            return trimmed.length > 0
+              ? trimmed
+              : `Action "${actionName}" cannot run with these arguments`
+          }
+
+          const initialRejection = checkModel(tracked.model)
+          if (initialRejection !== undefined) {
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: safeArgs,
+              confirmed: false,
+              ok: false,
+              error: initialRejection
+            })
+            return initialRejection
+          }
+
+          const confirmText =
+            typeof actionSpec.confirm === "function"
+              ? actionSpec.confirm(tracked.model, decoded.success)
+              : actionSpec.confirm
+
+          let confirmed = false
+          if (confirmText !== undefined) {
+            if (allow === undefined) {
+              const reason = `Needs a person: ${confirmText}`
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: safeArgs,
+                confirmed: false,
+                ok: false,
+                error: reason
+              })
+              return reason
+            }
+            const approved = yield* Effect.promise(() =>
+              Promise.resolve(
+                allow(
+                  {
+                    ref: tracked.path,
+                    label,
+                    action: actionName,
+                    confirm: confirmText,
+                    args: safeArgs
+                  },
+                  { signal: callOptions?.signal }
+                )
               )
             )
-          )
-          if (!approved) {
-            const reason = `Denied by person: ${confirmText}`
+            if (!approved) {
+              const reason = `Denied by person: ${confirmText}`
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: safeArgs,
+                confirmed: false,
+                ok: false,
+                error: reason
+              })
+              return reason
+            }
+            confirmed = true
+
+            syncAll()
+            const current = instances.get(tracked.instance)
+            let postConfirmFailure: string | undefined
+            if (current === undefined || contract.hidden?.(current.model) === true) {
+              postConfirmFailure = `No visible control matches ref "${stepRef}"`
+            } else if (actionSpec.enabled && !actionSpec.enabled(current.model)) {
+              postConfirmFailure = `Action "${actionName}" is currently disabled`
+            } else {
+              const recheck = checkModel(current.model)
+              if (recheck !== undefined) {
+                postConfirmFailure = recheck
+              } else {
+                const currentLabel = labelOf(contract, current.model)
+                const currentConfirmText =
+                  typeof actionSpec.confirm === "function"
+                    ? actionSpec.confirm(current.model, decoded.success)
+                    : actionSpec.confirm
+                if (currentLabel !== label || currentConfirmText !== confirmText) {
+                  postConfirmFailure = `Approval for "${actionName}" on "${label}" is stale because the target changed. Ask the person again.`
+                }
+              }
+            }
+            if (postConfirmFailure !== undefined) {
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: safeArgs,
+                confirmed: true,
+                ok: false,
+                error: postConfirmFailure
+              })
+              return postConfirmFailure
+            }
+          }
+
+          const msg = actionSpec.toMessage(decoded.success, { source: "agent" })
+          const dispatched = yield* dispatchTo(tracked.instance, tracked.path, msg)
+          if (!dispatched) {
+            const reason = `No mounted dispatcher accepted action "${actionName}" for "${tracked.path}"`
             auditLog.push({
               ref: tracked.path,
               label,
-              action: step.action,
+              action: actionName,
               secret: actionSpec.secret === true,
               args: safeArgs,
-              confirmed: false,
+              confirmed,
               ok: false,
               error: reason
             })
-            return fail(i, reason)
+            return reason
           }
-          confirmed = true
 
-          syncAll()
-          const current = instances.get(tracked.instance)
-          let postConfirmFailure: string | undefined
-          if (current === undefined || contract.hidden?.(current.model) === true) {
-            postConfirmFailure = `No visible control matches ref "${step.ref}"`
-          } else if (actionSpec.enabled && !actionSpec.enabled(current.model)) {
-            postConfirmFailure = `Action "${step.action}" is currently disabled`
-          } else {
-            const recheck = checkModel(current.model)
-            if (recheck !== undefined) {
-              postConfirmFailure = recheck
-            } else {
-              const currentLabel = labelOf(contract, current.model)
-              const currentConfirmText =
-                typeof actionSpec.confirm === "function"
-                  ? actionSpec.confirm(current.model, decoded.success)
-                  : actionSpec.confirm
-              if (currentLabel !== label || currentConfirmText !== confirmText) {
-                postConfirmFailure = `Approval for "${step.action}" on "${label}" is stale because the target changed. Ask the person again.`
-              }
-            }
-          }
-          if (postConfirmFailure !== undefined) {
-            auditLog.push({
-              ref: tracked.path,
-              label,
-              action: step.action,
-              secret: actionSpec.secret === true,
-              args: safeArgs,
-              confirmed: true,
-              ok: false,
-              error: postConfirmFailure
-            })
-            return fail(i, postConfirmFailure)
-          }
-        }
-
-        const msg = actionSpec.toMessage(decoded.success, { source: "agent" })
-        const dispatched = yield* dispatchTo(tracked.instance, tracked.path, msg)
-        if (!dispatched) {
-          const reason = `No mounted dispatcher accepted action "${step.action}" for "${tracked.path}"`
           auditLog.push({
             ref: tracked.path,
             label,
-            action: step.action,
+            action: actionName,
             secret: actionSpec.secret === true,
             args: safeArgs,
             confirmed,
-            ok: false,
-            error: reason
+            ok: true
           })
-          return fail(i, reason)
-        }
-
-        auditLog.push({
-          ref: tracked.path,
-          label,
-          action: step.action,
-          secret: actionSpec.secret === true,
-          args: safeArgs,
-          confirmed,
-          ok: true
+          return undefined
         })
+
+      const resolveVisibleOrReveal = (
+        ref: string,
+        visited: ReadonlySet<number>,
+        depth: number
+      ): Effect.Effect<
+        | { readonly ok: true; readonly target: { readonly tracked: TrackedInstance; readonly contract: AgentContract; readonly label: string } }
+        | { readonly ok: false; readonly error: string }
+      > =>
+        Effect.gen(function*() {
+          const visibleMatches = matchByRef(visibleEntries(), ref)
+          if (visibleMatches.length === 1) {
+            return { ok: true as const, target: visibleMatches[0]! }
+          }
+          if (visibleMatches.length > 1) {
+            const refs = visibleMatches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+            return { ok: false as const, error: `Ambiguous ref "${ref}": matched ${refs}` }
+          }
+
+          const hiddenMatches = matchByRef(discoverableHiddenEntries(), ref)
+          if (hiddenMatches.length === 0) {
+            return { ok: false as const, error: `No visible control matches ref "${ref}"` }
+          }
+          if (hiddenMatches.length > 1) {
+            const refs = hiddenMatches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+            return { ok: false as const, error: `Ambiguous hidden ref "${ref}": matched ${refs}` }
+          }
+
+          const hiddenTarget = hiddenMatches[0]!
+          if (visited.has(hiddenTarget.tracked.instance)) {
+            return {
+              ok: false as const,
+              error: `Reveal cycle detected while attempting to reveal "${hiddenTarget.label}"`
+            }
+          }
+          if (depth >= MAX_REVEAL_DEPTH) {
+            return {
+              ok: false as const,
+              error: `Exceeded maximum auto-reveal depth (${MAX_REVEAL_DEPTH}) for "${hiddenTarget.label}"`
+            }
+          }
+
+          const nextVisited = new Set(visited)
+          nextVisited.add(hiddenTarget.tracked.instance)
+
+          const containerRes = yield* resolveVisibleOrReveal(
+            hiddenTarget.revealedBy.container,
+            nextVisited,
+            depth + 1
+          )
+          if (!containerRes.ok) {
+            return containerRes
+          }
+
+          const revealErr = yield* executeSingleAction(
+            containerRes.target,
+            hiddenTarget.revealedBy.container,
+            hiddenTarget.revealedBy.action,
+            hiddenTarget.revealedBy.args ?? {}
+          )
+          if (revealErr !== undefined) {
+            return { ok: false as const, error: revealErr }
+          }
+
+          reveals.push({
+            container: containerRes.target.label,
+            action: hiddenTarget.revealedBy.action,
+            target: hiddenTarget.label
+          })
+
+          syncAll()
+          const updatedInstance = instances.get(hiddenTarget.tracked.instance)
+          if (
+            updatedInstance === undefined ||
+            hiddenTarget.contract.hidden?.(updatedInstance.model) === true
+          ) {
+            return {
+              ok: false as const,
+              error: `Reveal action "${hiddenTarget.revealedBy.action}" on "${containerRes.target.label}" did not make "${hiddenTarget.label}" visible`
+            }
+          }
+
+          return {
+            ok: true as const,
+            target: {
+              tracked: updatedInstance,
+              contract: hiddenTarget.contract,
+              label: labelOf(hiddenTarget.contract, updatedInstance.model)
+            }
+          }
+        })
+
+      for (let i = 0; i < input.steps.length; i++) {
+        const step = input.steps[i]!
+        const resolved = yield* resolveVisibleOrReveal(step.ref, new Set(), 0)
+        if (!resolved.ok) {
+          return fail(i, resolved.error)
+        }
+        const err = yield* executeSingleAction(resolved.target, step.ref, step.action, step.args)
+        if (err !== undefined) {
+          return fail(i, err)
+        }
         completed++
       }
 
-      return { ok: true, completed, state: visibleState() }
+      return {
+        ok: true,
+        completed,
+        state: visibleState(),
+        ...(reveals.length > 0 ? { revealed: reveals } : {})
+      }
     })
 
   const tools: AgentBridge["tools"] = (toolOptions) => {
@@ -590,35 +809,36 @@ export const make = (options: {
       {
         name: `${prefix}snapshot`,
         description:
-          "List visible interactive controls, their safe state, and their allowed actions with JSON Schemas. " +
-          `Call once to discover refs and action schemas; subsequent ${prefix}act calls return updated state directly.`,
+          "List visible interactive controls (plus hidden controls inside closed containers declaring revealedBy metadata with empty state), their safe state, and their allowed actions with JSON Schemas. " +
+          `Call once to discover refs and action schemas; subsequent ${prefix}act calls auto-reveal closed containers and return updated state directly.`,
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true },
         execute: async () => snapshot()
       },
       {
         name: `${prefix}query`,
-        description: "Find visible controls by label, path, component name, or action name.",
+        description: "Find visible or revealable controls by label, path, component name, reveal hint, or action name.",
         inputSchema: {
           type: "object",
           properties: {
             text: { type: "string" },
-            component: { type: "string" }
+            component: { type: "string" },
+            includeHidden: { type: "boolean" }
           },
           additionalProperties: false
         },
         annotations: { readOnlyHint: true },
         execute: async (input) => {
-          const q = (input ?? {}) as { text?: string; component?: string }
-          return query({ text: q.text, component: q.component })
+          const q = (input ?? {}) as { text?: string; component?: string; includeHidden?: boolean }
+          return query({ text: q.text, component: q.component, includeHidden: q.includeHidden })
         }
       },
       {
         name: `${prefix}act`,
         description:
-          "Run one or more typed actions on visible controls in order and return every visible control's updated safe state. " +
+          "Run one or more typed actions on controls in order (automatically revealing hidden controls inside closed containers via their revealedBy action) and return every visible control's updated safe state. " +
           "Batch independent and sequential steps into one steps array — earlier steps take effect before later steps run, " +
-          "so multi-step flows (such as editing fields, requesting and confirming an in-app step, and saving) can run in a single call once you know the target refs and IDs. " +
+          "so multi-step flows (such as editing fields inside closed tabs or accordions, requesting and confirming an in-app step, and saving) can run in a single call once you know the target refs and IDs. " +
           `Inspect the returned state directly instead of calling ${prefix}snapshot again. Destructive actions with a confirm gate require human approval.`,
         inputSchema: {
           type: "object",
