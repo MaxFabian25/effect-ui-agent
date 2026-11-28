@@ -42,10 +42,16 @@
     "LICENSE"
   ],
   "scripts": {
+    "typecheck": "effect-tsgo tsc --noEmit",
     "lint": "effect-tsgo oxlint --type-aware",
-    "check": "effect-tsgo tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" package.json .oxlintrc.json tsconfig.json",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" package.json .oxlintrc.json tsconfig.json",
+    "check": "bun run typecheck && bun run lint",
     "build": "tsc -p tsconfig.build.json",
-    "test": "bun test"
+    "doctor": "effect-doctor --strict .",
+    "verify:faults": "bun scripts/verify-faults.ts",
+    "test": "bun test",
+    "verify": "bun run check && bun run format:check && bun run build && bun test && bun run doctor && bun run verify:faults"
   },
   "peerDependencies": {
     "@effect/ui": "*",
@@ -58,9 +64,11 @@
     "@oxlint/plugins": "1.95.0",
     "@types/bun": "1.4.5",
     "effect": "4.1.5",
+    "effect-config": "github:MaxFabian25/effect-config#a4ebfb903556d2a48df17f0eb223f9cd32c9d81e",
     "happy-dom": "21.0.4",
     "oxlint": "1.95.0",
     "oxlint-tsgolint": "7.0.2008",
+    "prettier": "3.9.10",
     "typescript": "7.0.2"
   }
 }

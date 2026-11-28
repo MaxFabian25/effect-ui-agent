@@ -1,1 +1,1 @@
-export * from "./AgentBridge.js"
+export * from "./AgentBridge.js";

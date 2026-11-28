@@ -1,56 +1,82 @@
-import type { Component } from "@effect/ui"
-import { MessageLog } from "@effect/ui"
-import { BrowserHost } from "@effect/ui/html"
-import { TestHost } from "@effect/ui/testing"
-import type { Scope } from "effect"
-import { Cause, Context, Data, Effect, Exit, Layer, Match, Redacted, Result, Schema } from "effect"
+import type { Component } from "@effect/ui";
+import { MessageLog } from "@effect/ui";
+import { BrowserHost } from "@effect/ui/html";
+import { TestHost } from "@effect/ui/testing";
+import type { Scope } from "effect";
+import {
+  Cause,
+  Context,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Redacted,
+  Result,
+  Schema,
+} from "effect";
 
-export type ActionSource = "user" | "agent"
+class BridgeCallbackError extends Schema.TaggedError<
+  BridgeCallbackError,
+  { readonly brand: unique symbol }
+>()("BridgeCallbackError", {
+  message: Schema.String,
+}) {}
 
+export type ActionSource = "user" | "agent";
+
+// oxlint-disable-next-line typescript/no-explicit-any -- contravariant Args parameter required for heterogeneous action records
 export interface AgentActionSpec<Model, Msg, Args = any> {
-  readonly description: string
-  readonly args: Schema.Codec<Args, unknown, never, never>
-  readonly secret?: boolean | undefined
-  readonly confirm?: string | ((model: Model, args: Args) => string) | undefined
-  readonly enabled?: ((model: Model) => boolean) | undefined
-  readonly check?: ((model: Model, args: Args) => string | undefined) | undefined
-  readonly toMessage: (args: Args, meta: { readonly source: "agent" }) => Msg
+  readonly description: string;
+  readonly args: Schema.Codec<Args, unknown, never, never>;
+  readonly secret?: boolean | undefined;
+  readonly confirm?:
+    string | ((model: Model, args: Args) => string) | undefined;
+  readonly enabled?: ((model: Model) => boolean) | undefined;
+  readonly check?:
+    ((model: Model, args: Args) => string | undefined) | undefined;
+  readonly toMessage: (args: Args, meta: { readonly source: "agent" }) => Msg;
 }
 
 export interface AgentRow {
-  readonly id: string
-  readonly label: string
+  readonly id: string;
+  readonly label: string;
 }
 
-type RowsNotReady = { readonly status: "loading" | "refreshing" | "failed" }
+type RowsNotReady = { readonly status: "loading" | "refreshing" | "failed" };
 
 export type AgentRows =
   | { readonly status: "ready"; readonly rows: ReadonlyArray<AgentRow> }
-  | RowsNotReady
+  | RowsNotReady;
 
+// oxlint-disable-next-line typescript/no-explicit-any -- contravariant Model parameter required for heterogeneous contracts
 export interface AgentRevealSpec<Model = any> {
   /** Target ref (path or label) of the container control that reveals this control. */
-  readonly container: string | ((model: Model) => string)
+  readonly container: string | ((model: Model) => string);
   /** Action name on `container` that opens or reveals this control. */
-  readonly action: string
+  readonly action: string;
   /** Optional arguments passed to `container`'s reveal action. */
-  readonly args?: Record<string, unknown> | ((model: Model) => Record<string, unknown>) | undefined
+  readonly args?:
+    | Record<string, unknown>
+    | ((model: Model) => Record<string, unknown>)
+    | undefined;
   /** Optional human-readable explanation of how the control is revealed. */
-  readonly description?: string | undefined
+  readonly description?: string | undefined;
 }
 
 export interface ResolvedRevealSpec {
-  readonly container: string
-  readonly action: string
-  readonly args?: Record<string, unknown> | undefined
-  readonly description?: string | undefined
+  readonly container: string;
+  readonly action: string;
+  readonly args?: Record<string, unknown> | undefined;
+  readonly description?: string | undefined;
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any -- contravariant Model/Msg parameters required for heterogeneous contract arrays
 export interface AgentContract<Model = any, Msg = any> {
-  readonly component: Component.Any
-  readonly componentName: string
-  readonly label: string | ((model: Model) => string)
-  readonly hidden?: ((model: Model) => boolean) | undefined
+  readonly component: Component.Any;
+  readonly componentName: string;
+  readonly label: string | ((model: Model) => string);
+  readonly hidden?: ((model: Model) => boolean) | undefined;
   /**
    * Declares how a closed container (such as a Tab, Accordion, or Dialog) can
    * reveal this control while `hidden(model)` is `true`. Controls with
@@ -60,460 +86,533 @@ export interface AgentContract<Model = any, Msg = any> {
   readonly revealedBy?:
     | AgentRevealSpec<Model>
     | ((model: Model) => AgentRevealSpec<Model> | undefined)
-    | undefined
-  readonly state: (model: Model) => Record<string, unknown>
-  readonly rows?: ((model: Model) => AgentRows) | undefined
-  readonly actions: Record<string, AgentActionSpec<Model, Msg, any>>
+    | undefined;
+  readonly state: (model: Model) => Record<string, unknown>;
+  readonly rows?: ((model: Model) => AgentRows) | undefined;
+  // oxlint-disable-next-line typescript/no-explicit-any -- heterogeneous actions map holds distinct Args codecs per action
+  readonly actions: Record<string, AgentActionSpec<Model, Msg, any>>;
 }
 
 const componentDisplayName = (component: Component.Any): string => {
   if ("displayName" in component && typeof component.displayName === "string") {
-    return component.displayName
+    return component.displayName;
   }
-  return component.name ?? "Component"
-}
+  return component.name ?? "Component";
+};
 
 export const expose = <
   C extends Component.Any,
-  const Actions extends Record<string, any> = Record<string, any>
+  const Actions extends Record<string, unknown> = Record<string, unknown>,
 >(
   component: C,
-  spec: Omit<AgentContract<Component.Model<C>, Component.Message<C>>, "component" | "componentName" | "actions"> & {
+  spec: Omit<
+    AgentContract<Component.Model<C>, Component.Message<C>>,
+    "component" | "componentName" | "actions"
+  > & {
     readonly actions: {
-      readonly [K in keyof Actions]: AgentActionSpec<Component.Model<C>, Component.Message<C>, Actions[K]>
-    }
-  }
+      readonly [K in keyof Actions]: AgentActionSpec<
+        Component.Model<C>,
+        Component.Message<C>,
+        Actions[K]
+      >;
+    };
+  },
 ): AgentContract<Component.Model<C>, Component.Message<C>> => ({
   component,
   componentName: componentDisplayName(component),
-  ...spec
-})
+  ...spec,
+});
 
 export interface SnapshotAction {
-  readonly name: string
-  readonly description: string
-  readonly inputSchema: object
-  readonly confirm?: string | undefined
-  readonly secret?: boolean | undefined
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: object;
+  readonly confirm?: string | undefined;
+  readonly secret?: boolean | undefined;
 }
 
 export interface SnapshotEntry {
-  readonly ref: string
-  readonly instance: number
-  readonly component: string
-  readonly label: string
-  readonly state: Record<string, unknown>
-  readonly actions: ReadonlyArray<SnapshotAction>
-  readonly hidden?: true | undefined
-  readonly revealedBy?: ResolvedRevealSpec | undefined
+  readonly ref: string;
+  readonly instance: number;
+  readonly component: string;
+  readonly label: string;
+  readonly state: Record<string, unknown>;
+  readonly actions: ReadonlyArray<SnapshotAction>;
+  readonly hidden?: true | undefined;
+  readonly revealedBy?: ResolvedRevealSpec | undefined;
 }
 
 export interface AgentStepInput {
-  readonly ref: string
-  readonly action: string
-  readonly args?: unknown
+  readonly ref: string;
+  readonly action: string;
+  readonly args?: unknown;
 }
 
 export interface AllowRequest {
-  readonly ref: string
-  readonly label: string
-  readonly action: string
-  readonly confirm: string
-  readonly args: unknown
+  readonly ref: string;
+  readonly label: string;
+  readonly action: string;
+  readonly confirm: string;
+  readonly args: unknown;
 }
 
 export type AllowCallback = (
   request: AllowRequest,
-  context: { readonly signal?: AbortSignal | undefined }
-) => boolean | Promise<boolean>
+  context: { readonly signal?: AbortSignal | undefined },
+) => boolean | Promise<boolean>;
 
 export interface AuditEntry {
-  readonly ref: string
-  readonly label: string
-  readonly action: string
-  readonly secret: boolean
-  readonly args: unknown
-  readonly confirmed: boolean
-  readonly ok: boolean
-  readonly error?: string | undefined
+  readonly ref: string;
+  readonly label: string;
+  readonly action: string;
+  readonly secret: boolean;
+  readonly args: unknown;
+  readonly confirmed: boolean;
+  readonly ok: boolean;
+  readonly error?: string | undefined;
 }
 
 export interface ActStateEntry {
-  readonly ref: string
-  readonly label: string
-  readonly state: Record<string, unknown>
+  readonly ref: string;
+  readonly label: string;
+  readonly state: Record<string, unknown>;
 }
 
 export interface ActRevealRecord {
-  readonly container: string
-  readonly containerRef: string
-  readonly action: string
-  readonly target: string
-  readonly targetRef: string
+  readonly container: string;
+  readonly containerRef: string;
+  readonly action: string;
+  readonly target: string;
+  readonly targetRef: string;
 }
 
 export interface ActResult {
-  readonly ok: boolean
-  readonly completed: number
-  readonly state: ReadonlyArray<ActStateEntry>
-  readonly revealed?: ReadonlyArray<ActRevealRecord> | undefined
-  readonly error?: { readonly step: number; readonly message: string } | undefined
+  readonly ok: boolean;
+  readonly completed: number;
+  readonly state: ReadonlyArray<ActStateEntry>;
+  readonly revealed?: ReadonlyArray<ActRevealRecord> | undefined;
+  readonly error?:
+    { readonly step: number; readonly message: string } | undefined;
 }
 
 export interface ModelContextTool {
-  readonly name: string
-  readonly description: string
-  readonly inputSchema?: object | undefined
-  readonly annotations?: {
-    readonly readOnlyHint?: boolean | undefined
-    readonly consequentialHint?: boolean | undefined
-  } | undefined
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema?: object | undefined;
+  readonly annotations?:
+    | {
+        readonly readOnlyHint?: boolean | undefined;
+        readonly consequentialHint?: boolean | undefined;
+      }
+    | undefined;
   readonly execute: (
     input: unknown,
-    client?: { readonly signal?: AbortSignal | undefined }
-  ) => Promise<unknown>
+    client?: { readonly signal?: AbortSignal | undefined },
+  ) => Promise<unknown>;
 }
 
 export interface ModelContext {
   readonly registerTool: (
     tool: ModelContextTool,
-    options?: { readonly signal?: AbortSignal | undefined }
-  ) => unknown
+    options?: { readonly signal?: AbortSignal | undefined },
+  ) => unknown;
 }
 
 export interface Dispatcher {
-  readonly dispatch: (instance: number, path: string, message: unknown) => Effect.Effect<boolean>
-  readonly sync?: (() => void) | undefined
+  readonly dispatch: (
+    instance: number,
+    path: string,
+    message: unknown,
+  ) => Effect.Effect<boolean>;
+  readonly sync?: (() => void) | undefined;
 }
 
 interface TrackedInstance {
-  readonly instance: number
-  readonly path: string
-  readonly componentRef: unknown
-  readonly component: string
-  model: unknown
+  readonly instance: number;
+  readonly path: string;
+  readonly componentRef: unknown;
+  readonly component: string;
+  model: unknown;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
-const scrubRecord = (record: Record<string, unknown>): Record<string, unknown> => {
-  const out: Record<string, unknown> = {}
+const scrubRecord = (
+  record: Record<string, unknown>,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(record)) {
-    out[k] = scrubRedacted(v)
+    out[k] = scrubRedacted(v);
   }
-  return out
-}
+  return out;
+};
 
 const scrubRedacted = (value: unknown): unknown => {
-  if (Redacted.isRedacted(value)) return "[Redacted]"
-  if (Array.isArray(value)) return value.map(scrubRedacted)
-  if (isRecord(value)) return scrubRecord(value)
-  return value
-}
+  if (Redacted.isRedacted(value)) return "[Redacted]";
+  if (Array.isArray(value)) return value.map(scrubRedacted);
+  if (isRecord(value)) return scrubRecord(value);
+  return value;
+};
 
 interface InternalResolvedRevealSpec {
-  readonly container: string
-  readonly action: string
-  readonly rawArgs?: Record<string, unknown> | undefined
-  readonly description?: string | undefined
+  readonly container: string;
+  readonly action: string;
+  readonly rawArgs?: Record<string, unknown> | undefined;
+  readonly description?: string | undefined;
 }
 
 type RevealResolution = Data.TaggedEnum<{
-  readonly None: {}
-  readonly Ok: { readonly spec: InternalResolvedRevealSpec }
-  readonly Error: {}
-}>
-const RevealResolution = Data.taggedEnum<RevealResolution>()
+  readonly None: {};
+  readonly Ok: { readonly spec: InternalResolvedRevealSpec };
+  readonly Error: {};
+}>;
+const RevealResolution = Data.taggedEnum<RevealResolution>();
 
-type HiddenCheck = "visible" | "hidden" | "error"
+type HiddenCheck = "visible" | "hidden" | "error";
 
 const checkEnabledSafe = (
+  // oxlint-disable-next-line typescript/no-explicit-any -- receives erased model callback from heterogeneous AgentContract
   enabled: ((model: any) => boolean) | undefined,
-  model: unknown
+  model: unknown,
 ): boolean => {
-  if (enabled === undefined) return true
+  if (enabled === undefined) return true;
   try {
-    return enabled(model)
+    return enabled(model);
   } catch {
-    return false
+    return false;
   }
-}
+};
 
 const checkHidden = (contract: AgentContract, model: unknown): HiddenCheck => {
-  if (contract.hidden === undefined) return "visible"
+  if (contract.hidden === undefined) return "visible";
   try {
-    return contract.hidden(model) === true ? "hidden" : "visible"
+    return contract.hidden(model) === true ? "hidden" : "visible";
   } catch {
-    return "error"
+    return "error";
   }
-}
+};
 
-const labelOfSafe = (contract: AgentContract, model: unknown, fallback: string): string => {
-  if (typeof contract.label !== "function") return contract.label
+const labelOfSafe = (
+  contract: AgentContract,
+  model: unknown,
+  fallback: string,
+): string => {
+  if (typeof contract.label !== "function") return contract.label;
   try {
-    return contract.label(model)
+    return contract.label(model);
   } catch {
-    return fallback
+    return fallback;
   }
-}
+};
 
 const resolveRevealOf = (
   contract: AgentContract,
-  model: unknown
+  model: unknown,
 ): RevealResolution => {
-  if (contract.revealedBy === undefined) return RevealResolution.None()
+  if (contract.revealedBy === undefined) return RevealResolution.None();
   try {
     const raw =
       typeof contract.revealedBy === "function"
         ? contract.revealedBy(model)
-        : contract.revealedBy
-    if (raw === undefined) return RevealResolution.None()
+        : contract.revealedBy;
+    if (raw === undefined) return RevealResolution.None();
     const container =
-      typeof raw.container === "function" ? raw.container(model) : raw.container
-    const rawArgs =
-      typeof raw.args === "function" ? raw.args(model) : raw.args
+      typeof raw.container === "function"
+        ? raw.container(model)
+        : raw.container;
+    const rawArgs = typeof raw.args === "function" ? raw.args(model) : raw.args;
     return RevealResolution.Ok({
       spec: {
         container,
         action: raw.action,
         ...(rawArgs !== undefined ? { rawArgs } : {}),
-        ...(raw.description !== undefined ? { description: raw.description } : {})
-      }
-    })
+        ...(raw.description !== undefined
+          ? { description: raw.description }
+          : {}),
+      },
+    });
   } catch {
-    return RevealResolution.Error()
+    return RevealResolution.Error();
   }
-}
+};
 
 const jsonSchemaOf = (schema: Schema.Top): object => {
-  const doc = Schema.toJsonSchemaDocument(schema)
-  return doc.schema
-}
+  const doc = Schema.toJsonSchemaDocument(schema);
+  return doc.schema;
+};
 
-const defaultRowLimit = 10
-const maxRowLimit = 50
+const defaultRowLimit = 10;
+const maxRowLimit = 50;
 const RowQuerySchema = Schema.Struct({
   ref: Schema.String.check(Schema.isMinLength(1)),
   text: Schema.optionalKey(Schema.String),
-  offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: maxRowLimit })))
-})
-const decodeRowQuery = Schema.decodeUnknownSync(RowQuerySchema, { onExcessProperty: "error" })
+  offset: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: maxRowLimit })),
+  ),
+});
+const decodeRowQuery = Schema.decodeUnknownSync(RowQuerySchema, {
+  onExcessProperty: "error",
+});
 
-export type RowQueryInput = typeof RowQuerySchema.Type
+export type RowQueryInput = typeof RowQuerySchema.Type;
 
 export type RowQueryResult =
-  | { readonly status: "ready"; readonly rows: ReadonlyArray<AgentRow>; readonly more: boolean }
+  | {
+      readonly status: "ready";
+      readonly rows: ReadonlyArray<AgentRow>;
+      readonly more: boolean;
+    }
   | RowsNotReady
-  | { readonly status: "unavailable" }
+  | { readonly status: "unavailable" };
 
 export interface AgentBridge {
-  readonly messageLog: MessageLog.MessageLog
-  readonly registerControllable: (root: BrowserHost.Controllable) => () => void
-  readonly attachDispatcher: (dispatcher: Dispatcher) => () => void
+  readonly messageLog: MessageLog.MessageLog;
+  readonly registerControllable: (root: BrowserHost.Controllable) => () => void;
+  readonly attachDispatcher: (dispatcher: Dispatcher) => () => void;
   readonly snapshot: (options?: {
-    readonly includeHidden?: boolean | undefined
-  }) => ReadonlyArray<SnapshotEntry>
+    readonly includeHidden?: boolean | undefined;
+  }) => ReadonlyArray<SnapshotEntry>;
   readonly query: (filter: {
-    readonly text?: string | undefined
-    readonly component?: string | undefined
-    readonly includeHidden?: boolean | undefined
-  }) => ReadonlyArray<SnapshotEntry>
-  readonly queryRows: (input: RowQueryInput) => RowQueryResult
+    readonly text?: string | undefined;
+    readonly component?: string | undefined;
+    readonly includeHidden?: boolean | undefined;
+  }) => ReadonlyArray<SnapshotEntry>;
+  readonly queryRows: (input: RowQueryInput) => RowQueryResult;
   readonly act: (
     input: { readonly steps: ReadonlyArray<AgentStepInput> },
-    options?: { readonly signal?: AbortSignal | undefined; readonly allow?: AllowCallback | undefined }
-  ) => Effect.Effect<ActResult>
-  readonly audit: () => ReadonlyArray<AuditEntry>
+    options?: {
+      readonly signal?: AbortSignal | undefined;
+      readonly allow?: AllowCallback | undefined;
+    },
+  ) => Effect.Effect<ActResult>;
+  readonly audit: () => ReadonlyArray<AuditEntry>;
   readonly tools: (options?: {
-    readonly prefix?: string | undefined
-    readonly allow?: AllowCallback | undefined
-  }) => ReadonlyArray<ModelContextTool>
+    readonly prefix?: string | undefined;
+    readonly allow?: AllowCallback | undefined;
+  }) => ReadonlyArray<ModelContextTool>;
   readonly registerWebMcp: (
     context: ModelContext,
-    options: { readonly prefix?: string | undefined; readonly allow: AllowCallback }
-  ) => Effect.Effect<void, never, Scope.Scope>
+    options: {
+      readonly prefix?: string | undefined;
+      readonly allow: AllowCallback;
+    },
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
-export class AgentBridgeService extends Context.Service<AgentBridgeService, AgentBridge>()(
-  "effect-ui/AgentBridge"
-) {}
+export class AgentBridgeService extends Context.Service<
+  AgentBridgeService,
+  AgentBridge
+>()("effect-ui/AgentBridge") {}
 
 export const make = (options: {
-  readonly contracts: ReadonlyArray<AgentContract<any, any>>
-  readonly allow?: AllowCallback | undefined
+  // oxlint-disable-next-line typescript/no-explicit-any -- heterogeneous contract array accepts distinct component models/messages
+  readonly contracts: ReadonlyArray<AgentContract<any, any>>;
+  readonly allow?: AllowCallback | undefined;
 }): AgentBridge => {
-  const byComponent = new Map<unknown, AgentContract>()
+  const byComponent = new Map<unknown, AgentContract>();
   for (const contract of options.contracts) {
-    byComponent.set(contract.component, contract)
+    byComponent.set(contract.component, contract);
   }
 
-  const instances = new Map<number, TrackedInstance>()
-  const controllables = new Set<BrowserHost.Controllable>()
-  const dispatchers = new Set<Dispatcher>()
-  const auditLog: Array<AuditEntry> = []
+  const instances = new Map<number, TrackedInstance>();
+  const controllables = new Set<BrowserHost.Controllable>();
+  const dispatchers = new Set<Dispatcher>();
+  const auditLog: Array<AuditEntry> = [];
 
   const messageLog: MessageLog.MessageLog = {
     enabled: true,
     record: (entry) => {
       Match.value(entry).pipe(
         Match.tag("Mounted", (mounted) => {
-          const contract = byComponent.get(mounted.component)
+          const contract = byComponent.get(mounted.component);
           if (contract !== undefined) {
-            const componentName = mounted.path.split("/").pop()?.replace(/\[.*\]$/, "") || contract.componentName
+            const componentName =
+              mounted.path
+                .split("/")
+                .pop()
+                ?.replace(/\[.*\]$/, "") || contract.componentName;
             instances.set(mounted.instance, {
               instance: mounted.instance,
               path: mounted.path,
               componentRef: mounted.component,
               component: componentName,
-              model: mounted.model
-            })
+              model: mounted.model,
+            });
           }
         }),
         Match.tag("Update", (updated) => {
-          const tracked = instances.get(updated.instance)
+          const tracked = instances.get(updated.instance);
           if (tracked !== undefined) {
-            tracked.model = updated.model
+            tracked.model = updated.model;
           }
         }),
         Match.tag("Unmounted", (unmounted) => {
-          instances.delete(unmounted.instance)
+          instances.delete(unmounted.instance);
         }),
-        Match.orElse(() => {})
-      )
-    }
-  }
+        Match.orElse(() => {}),
+      );
+    },
+  };
 
   const syncAll = () => {
     for (const dispatcher of dispatchers) {
-      dispatcher.sync?.()
+      dispatcher.sync?.();
     }
-  }
+  };
 
   type VisibleEntry = {
-    readonly tracked: TrackedInstance
-    readonly contract: AgentContract
-    readonly label: string
-  }
+    readonly tracked: TrackedInstance;
+    readonly contract: AgentContract;
+    readonly label: string;
+  };
 
   type HiddenRevealEntry = {
-    readonly tracked: TrackedInstance
-    readonly contract: AgentContract
-    readonly label: string
-    readonly revealedBy: RevealResolution
-  }
+    readonly tracked: TrackedInstance;
+    readonly contract: AgentContract;
+    readonly label: string;
+    readonly revealedBy: RevealResolution;
+  };
 
   const visibleEntries = (sync = true): ReadonlyArray<VisibleEntry> => {
-    if (sync) syncAll()
-    const out: Array<VisibleEntry> = []
+    if (sync) syncAll();
+    const out: Array<VisibleEntry> = [];
     for (const tracked of instances.values()) {
-      const contract = byComponent.get(tracked.componentRef)
-      if (contract === undefined) continue
-      if (checkHidden(contract, tracked.model) !== "visible") continue
-      out.push({ tracked, contract, label: labelOfSafe(contract, tracked.model, tracked.component) })
+      const contract = byComponent.get(tracked.componentRef);
+      if (contract === undefined) continue;
+      if (checkHidden(contract, tracked.model) !== "visible") continue;
+      out.push({
+        tracked,
+        contract,
+        label: labelOfSafe(contract, tracked.model, tracked.component),
+      });
     }
-    return out
-  }
+    return out;
+  };
 
-  const hiddenRevealEntries = (sync = true): ReadonlyArray<HiddenRevealEntry> => {
-    if (sync) syncAll()
-    const out: Array<HiddenRevealEntry> = []
+  const hiddenRevealEntries = (
+    sync = true,
+  ): ReadonlyArray<HiddenRevealEntry> => {
+    if (sync) syncAll();
+    const out: Array<HiddenRevealEntry> = [];
     for (const tracked of instances.values()) {
-      const contract = byComponent.get(tracked.componentRef)
-      if (contract === undefined) continue
-      if (checkHidden(contract, tracked.model) !== "hidden") continue
-      const revealedBy = resolveRevealOf(contract, tracked.model)
-      if (RevealResolution.$is("None")(revealedBy)) continue
-      out.push({ tracked, contract, label: labelOfSafe(contract, tracked.model, tracked.component), revealedBy })
+      const contract = byComponent.get(tracked.componentRef);
+      if (contract === undefined) continue;
+      if (checkHidden(contract, tracked.model) !== "hidden") continue;
+      const revealedBy = resolveRevealOf(contract, tracked.model);
+      if (RevealResolution.$is("None")(revealedBy)) continue;
+      out.push({
+        tracked,
+        contract,
+        label: labelOfSafe(contract, tracked.model, tracked.component),
+        revealedBy,
+      });
     }
-    return out
-  }
+    return out;
+  };
 
-  const matchExactByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
+  const matchExactByRef = <
+    T extends { readonly tracked: TrackedInstance; readonly label: string },
+  >(
     entries: ReadonlyArray<T>,
-    ref: string
+    ref: string,
   ): ReadonlyArray<T> =>
-    entries.filter((v) => v.tracked.path === ref || v.label === ref)
+    entries.filter((v) => v.tracked.path === ref || v.label === ref);
 
-  const matchSubstringByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
+  const matchSubstringByRef = <
+    T extends { readonly tracked: TrackedInstance; readonly label: string },
+  >(
     entries: ReadonlyArray<T>,
-    ref: string
+    ref: string,
   ): ReadonlyArray<T> => {
-    const needle = ref.toLowerCase()
-    return entries.filter((v) => v.label.toLowerCase().includes(needle))
-  }
+    const needle = ref.toLowerCase();
+    return entries.filter((v) => v.label.toLowerCase().includes(needle));
+  };
 
-  const isRevealActionSecret = (containerRef: string, actionName: string): boolean => {
-    const allEntries: Array<VisibleEntry> = []
+  const isRevealActionSecret = (
+    containerRef: string,
+    actionName: string,
+  ): boolean => {
+    const allEntries: Array<VisibleEntry> = [];
     for (const tracked of instances.values()) {
-      const contract = byComponent.get(tracked.componentRef)
-      if (contract === undefined) continue
+      const contract = byComponent.get(tracked.componentRef);
+      if (contract === undefined) continue;
       allEntries.push({
         tracked,
         contract,
-        label: labelOfSafe(contract, tracked.model, tracked.component)
-      })
+        label: labelOfSafe(contract, tracked.model, tracked.component),
+      });
     }
-    const exact = matchExactByRef(allEntries, containerRef)
-    const matches = exact.length > 0 ? exact : matchSubstringByRef(allEntries, containerRef)
-    return matches.some((m) => m.contract.actions[actionName]?.secret === true)
-  }
+    const exact = matchExactByRef(allEntries, containerRef);
+    const matches =
+      exact.length > 0 ? exact : matchSubstringByRef(allEntries, containerRef);
+    return matches.some((m) => m.contract.actions[actionName]?.secret === true);
+  };
 
-  const toPublicRevealSpec = (spec: InternalResolvedRevealSpec): ResolvedRevealSpec => {
-    const secret = isRevealActionSecret(spec.container, spec.action)
+  const toPublicRevealSpec = (
+    spec: InternalResolvedRevealSpec,
+  ): ResolvedRevealSpec => {
+    const secret = isRevealActionSecret(spec.container, spec.action);
     return {
       container: spec.container,
       action: spec.action,
       ...(!secret && spec.rawArgs !== undefined
         ? { args: scrubRecord(spec.rawArgs) }
         : {}),
-      ...(spec.description !== undefined ? { description: spec.description } : {})
-    }
-  }
+      ...(spec.description !== undefined
+        ? { description: spec.description }
+        : {}),
+    };
+  };
 
-  const safeStateOf = (contract: AgentContract, model: unknown): Record<string, unknown> => {
+  const safeStateOf = (
+    contract: AgentContract,
+    model: unknown,
+  ): Record<string, unknown> => {
     try {
-      return scrubRecord(contract.state(model))
+      return scrubRecord(contract.state(model));
     } catch {
-      return {}
+      return {};
     }
-  }
+  };
 
   const visibleState = (sync = true): ReadonlyArray<ActStateEntry> =>
     visibleEntries(sync).map(({ tracked, contract, label }) => ({
       ref: tracked.path,
       label,
-      state: safeStateOf(contract, tracked.model)
-    }))
+      state: safeStateOf(contract, tracked.model),
+    }));
 
   const snapshotActionsOf = (
     contract: AgentContract,
     model: unknown,
-    isHidden: boolean
+    isHidden: boolean,
   ): ReadonlyArray<SnapshotAction> => {
-    const actions: Array<SnapshotAction> = []
+    const actions: Array<SnapshotAction> = [];
     for (const [name, spec] of Object.entries(contract.actions)) {
       if (!isHidden && spec.enabled !== undefined) {
-        let enabled = false
+        let enabled = false;
         try {
-          enabled = spec.enabled(model)
+          enabled = spec.enabled(model);
         } catch {
-          enabled = false
+          enabled = false;
         }
-        if (!enabled) continue
+        if (!enabled) continue;
       }
-      let confirm: string | undefined
+      let confirm: string | undefined;
       if (typeof spec.confirm === "string") {
-        confirm = spec.confirm
+        confirm = spec.confirm;
       } else if (typeof spec.confirm === "function") {
         if (isHidden) {
-          confirm = "Confirmation required after reveal"
+          confirm = "Confirmation required after reveal";
         } else {
           try {
-            confirm = spec.confirm(model, {})
+            confirm = spec.confirm(model, {});
           } catch {
-            confirm = "Confirmation required"
+            confirm = "Confirmation required";
           }
         }
       }
@@ -522,28 +621,32 @@ export const make = (options: {
         description: spec.description,
         inputSchema: jsonSchemaOf(spec.args),
         ...(confirm !== undefined ? { confirm } : {}),
-        ...(spec.secret === true ? { secret: true } : {})
-      })
+        ...(spec.secret === true ? { secret: true } : {}),
+      });
     }
-    return actions
-  }
+    return actions;
+  };
 
   const snapshot: AgentBridge["snapshot"] = (snapOptions) => {
-    const includeHidden = snapOptions?.includeHidden ?? true
-    syncAll()
-    const visible: Array<SnapshotEntry> = visibleEntries(false).map(({ tracked, contract, label }) => ({
-      ref: tracked.path,
-      instance: tracked.instance,
-      component: tracked.component,
-      label,
-      state: safeStateOf(contract, tracked.model),
-      actions: snapshotActionsOf(contract, tracked.model, false)
-    }))
-    if (!includeHidden) return visible
+    const includeHidden = snapOptions?.includeHidden ?? true;
+    syncAll();
+    const visible: Array<SnapshotEntry> = visibleEntries(false).map(
+      ({ tracked, contract, label }) => ({
+        ref: tracked.path,
+        instance: tracked.instance,
+        component: tracked.component,
+        label,
+        state: safeStateOf(contract, tracked.model),
+        actions: snapshotActionsOf(contract, tracked.model, false),
+      }),
+    );
+    if (!includeHidden) return visible;
 
-    const hidden: Array<SnapshotEntry> = []
-    for (const { tracked, contract, label, revealedBy } of hiddenRevealEntries(false)) {
-      if (!RevealResolution.$is("Ok")(revealedBy)) continue
+    const hidden: Array<SnapshotEntry> = [];
+    for (const { tracked, contract, label, revealedBy } of hiddenRevealEntries(
+      false,
+    )) {
+      if (!RevealResolution.$is("Ok")(revealedBy)) continue;
       hidden.push({
         ref: tracked.path,
         instance: tracked.instance,
@@ -552,152 +655,190 @@ export const make = (options: {
         state: {},
         actions: snapshotActionsOf(contract, tracked.model, true),
         hidden: true,
-        revealedBy: toPublicRevealSpec(revealedBy.spec)
-      })
+        revealedBy: toPublicRevealSpec(revealedBy.spec),
+      });
     }
-    return [...visible, ...hidden]
-  }
+    return [...visible, ...hidden];
+  };
 
   const query: AgentBridge["query"] = (filter) => {
-    const needle = filter.text?.toLowerCase()
+    const needle = filter.text?.toLowerCase();
     return snapshot({ includeHidden: filter.includeHidden }).filter((entry) => {
-      if (filter.component !== undefined && entry.component !== filter.component) return false
-      if (needle === undefined) return true
-      if (entry.label.toLowerCase().includes(needle)) return true
-      if (entry.ref.toLowerCase().includes(needle)) return true
-      if (entry.revealedBy?.description?.toLowerCase().includes(needle) === true) return true
+      if (
+        filter.component !== undefined &&
+        entry.component !== filter.component
+      )
+        return false;
+      if (needle === undefined) return true;
+      if (entry.label.toLowerCase().includes(needle)) return true;
+      if (entry.ref.toLowerCase().includes(needle)) return true;
+      if (
+        entry.revealedBy?.description?.toLowerCase().includes(needle) === true
+      )
+        return true;
       return entry.actions.some(
         (a) =>
           a.name.toLowerCase().includes(needle) ||
-          a.description.toLowerCase().includes(needle)
-      )
-    })
-  }
+          a.description.toLowerCase().includes(needle),
+      );
+    });
+  };
 
   const queryRows = (input: unknown): RowQueryResult => {
-    const { ref, text, offset = 0, limit = defaultRowLimit } = decodeRowQuery(input)
-    const matches = visibleEntries().filter(({ tracked, label }) => tracked.path === ref || label === ref)
-    const [match] = matches
-    if (match === undefined || matches.length !== 1) return { status: "unavailable" }
+    const {
+      ref,
+      text,
+      offset = 0,
+      limit = defaultRowLimit,
+    } = decodeRowQuery(input);
+    const matches = visibleEntries().filter(
+      ({ tracked, label }) => tracked.path === ref || label === ref,
+    );
+    const [match] = matches;
+    if (match === undefined || matches.length !== 1)
+      return { status: "unavailable" };
 
-    const list = match.contract.rows?.(match.tracked.model)
-    if (list === undefined) return { status: "unavailable" }
-    if (list.status !== "ready") return { status: list.status }
+    const list = match.contract.rows?.(match.tracked.model);
+    if (list === undefined) return { status: "unavailable" };
+    if (list.status !== "ready") return { status: list.status };
 
-    const needle = text?.toLowerCase()
-    const rows: Array<AgentRow> = []
-    let skipped = 0
+    const needle = text?.toLowerCase();
+    const rows: Array<AgentRow> = [];
+    let skipped = 0;
     for (const { id, label } of list.rows) {
-      if (needle !== undefined && !label.toLowerCase().includes(needle) && !id.toLowerCase().includes(needle)) continue
+      if (
+        needle !== undefined &&
+        !label.toLowerCase().includes(needle) &&
+        !id.toLowerCase().includes(needle)
+      )
+        continue;
       if (skipped < offset) {
-        skipped++
-        continue
+        skipped++;
+        continue;
       }
-      if (rows.length === limit) return { status: "ready", rows, more: true }
-      rows.push({ id, label })
+      if (rows.length === limit) return { status: "ready", rows, more: true };
+      rows.push({ id, label });
     }
-    return { status: "ready", rows, more: false }
-  }
+    return { status: "ready", rows, more: false };
+  };
 
   const dispatchTo = (
     instance: number,
     path: string,
-    message: unknown
-  ): Effect.Effect<{ readonly ok: true; readonly dispatched: boolean } | { readonly ok: false; readonly error: string }> =>
-    Effect.gen(function*() {
+    message: unknown,
+  ): Effect.Effect<
+    | { readonly ok: true; readonly dispatched: boolean }
+    | { readonly ok: false; readonly error: string }
+  > =>
+    Effect.gen(function* () {
       for (const root of controllables) {
         const exit = yield* Effect.suspend(() => {
-          const controlled = root.instance(instance)
-          if (controlled === undefined) return Effect.succeed<boolean | undefined>(undefined)
+          const controlled = root.instance(instance);
+          if (controlled === undefined)
+            return Effect.succeed<boolean | undefined>(undefined);
           return controlled.dispatch(message).pipe(
             Effect.map((result) =>
               Match.value(result).pipe(
                 Match.tag("Updated", () => true),
-                Match.tag("Ignored", (ignored) => ignored.reason === "unchanged"),
-                Match.orElse(() => false)
-              )
-            )
-          )
-        }).pipe(Effect.exit)
+                Match.tag(
+                  "Ignored",
+                  (ignored) => ignored.reason === "unchanged",
+                ),
+                Match.orElse(() => false),
+              ),
+            ),
+          );
+        }).pipe(Effect.exit);
         if (Exit.isFailure(exit)) {
           if (Cause.hasInterruptsOnly(exit.cause)) {
-            return yield* Effect.failCause(exit.cause)
+            return yield* Effect.failCause(exit.cause);
           }
-          return { ok: false as const, error: `Dispatch failed for "${path}"` }
+          return { ok: false as const, error: `Dispatch failed for "${path}"` };
         }
         if (exit.value !== undefined) {
-          return { ok: true as const, dispatched: exit.value }
+          return { ok: true as const, dispatched: exit.value };
         }
       }
       for (const dispatcher of dispatchers) {
-        const exit = yield* Effect.suspend(() => dispatcher.dispatch(instance, path, message)).pipe(Effect.exit)
+        const exit = yield* Effect.suspend(() =>
+          dispatcher.dispatch(instance, path, message),
+        ).pipe(Effect.exit);
         if (Exit.isFailure(exit)) {
           if (Cause.hasInterruptsOnly(exit.cause)) {
-            return yield* Effect.failCause(exit.cause)
+            return yield* Effect.failCause(exit.cause);
           }
-          return { ok: false as const, error: `Dispatch failed for "${path}"` }
+          return { ok: false as const, error: `Dispatch failed for "${path}"` };
         }
         if (exit.value) {
-          return { ok: true as const, dispatched: true }
+          return { ok: true as const, dispatched: true };
         }
       }
-      return { ok: true as const, dispatched: false }
-    })
+      return { ok: true as const, dispatched: false };
+    });
 
-  const MAX_REVEAL_DEPTH = 4
+  const MAX_REVEAL_DEPTH = 4;
 
   const act: AgentBridge["act"] = (input, callOptions) =>
-    Effect.gen(function*() {
-      const allow = callOptions?.allow ?? options.allow
-      let completed = 0
-      const reveals: Array<ActRevealRecord> = []
+    Effect.gen(function* () {
+      const allow = callOptions?.allow ?? options.allow;
+      let completed = 0;
+      const reveals: Array<ActRevealRecord> = [];
 
       const fail = (step: number, message: string): ActResult => ({
         ok: false,
         completed,
         state: visibleState(),
         ...(reveals.length > 0 ? { revealed: reveals } : {}),
-        error: { step, message }
-      })
+        error: { step, message },
+      });
 
       const preValidateHiddenAction = (
         target: HiddenRevealEntry,
         actionName: string,
-        rawArgs: unknown
+        rawArgs: unknown,
       ): Effect.Effect<string | undefined> =>
-        Effect.gen(function*() {
-          const { tracked, contract, label } = target
-          const actionSpec = contract.actions[actionName]
+        Effect.gen(function* () {
+          const { tracked, contract, label } = target;
+          const actionSpec = contract.actions[actionName];
           if (actionSpec === undefined) {
-            const allowed = Object.keys(contract.actions).join(", ")
-            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`
+            const allowed = Object.keys(contract.actions).join(", ");
+            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`;
           }
 
-          const decoded = yield* Schema.decodeEffect(actionSpec.args)(rawArgs ?? {}, {
-            onExcessProperty: "error"
-          }).pipe(Effect.result)
+          const decoded = yield* Schema.decodeEffect(actionSpec.args)(
+            rawArgs ?? {},
+            {
+              onExcessProperty: "error",
+            },
+          ).pipe(Effect.result);
 
           if (Result.isFailure(decoded)) {
-            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`
+            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`;
             auditLog.push({
               ref: tracked.path,
               label,
               action: actionName,
               secret: actionSpec.secret === true,
-              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+              args:
+                actionSpec.secret === true
+                  ? "[Redacted]"
+                  : scrubRedacted(rawArgs ?? {}),
               confirmed: false,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
 
           if (actionSpec.confirm !== undefined && allow === undefined) {
-            const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
+            const safeArgs =
+              actionSpec.secret === true
+                ? "[Redacted]"
+                : scrubRedacted(decoded.success);
             const reason =
               typeof actionSpec.confirm === "string"
                 ? `Needs a person: ${actionSpec.confirm}`
-                : `Needs a person: confirmation required for "${actionName}" on "${label}"`
+                : `Needs a person: confirmation required for "${actionName}" on "${label}"`;
             auditLog.push({
               ref: tracked.path,
               label,
@@ -706,62 +847,71 @@ export const make = (options: {
               args: safeArgs,
               confirmed: false,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
 
-          return undefined
-        })
+          return undefined;
+        });
 
-      const findVisibleTarget = (hiddenTarget: HiddenRevealEntry): VisibleEntry | undefined => {
-        const updatedInstance = instances.get(hiddenTarget.tracked.instance)
+      const findVisibleTarget = (
+        hiddenTarget: HiddenRevealEntry,
+      ): VisibleEntry | undefined => {
+        const updatedInstance = instances.get(hiddenTarget.tracked.instance);
         if (
           updatedInstance !== undefined &&
-          checkHidden(hiddenTarget.contract, updatedInstance.model) === "visible"
+          checkHidden(hiddenTarget.contract, updatedInstance.model) ===
+            "visible"
         ) {
           return {
             tracked: updatedInstance,
             contract: hiddenTarget.contract,
-            label: labelOfSafe(hiddenTarget.contract, updatedInstance.model, updatedInstance.component)
-          }
+            label: labelOfSafe(
+              hiddenTarget.contract,
+              updatedInstance.model,
+              updatedInstance.component,
+            ),
+          };
         }
         const remounted = visibleEntries(false).filter(
           (entry) =>
             entry.tracked.instance !== hiddenTarget.tracked.instance &&
             entry.tracked.path === hiddenTarget.tracked.path &&
-            entry.tracked.componentRef === hiddenTarget.tracked.componentRef
-        )
-        return remounted.length === 1 ? remounted[0] : undefined
-      }
+            entry.tracked.componentRef === hiddenTarget.tracked.componentRef,
+        );
+        return remounted.length === 1 ? remounted[0] : undefined;
+      };
 
-      const findTrackedInstance = (hiddenTarget: HiddenRevealEntry): TrackedInstance | undefined => {
-        const direct = instances.get(hiddenTarget.tracked.instance)
-        if (direct !== undefined) return direct
-        const remounted: Array<TrackedInstance> = []
+      const findTrackedInstance = (
+        hiddenTarget: HiddenRevealEntry,
+      ): TrackedInstance | undefined => {
+        const direct = instances.get(hiddenTarget.tracked.instance);
+        if (direct !== undefined) return direct;
+        const remounted: Array<TrackedInstance> = [];
         for (const tracked of instances.values()) {
           if (
             tracked.path === hiddenTarget.tracked.path &&
             tracked.componentRef === hiddenTarget.tracked.componentRef
           ) {
-            remounted.push(tracked)
+            remounted.push(tracked);
           }
         }
-        return remounted.length === 1 ? remounted[0] : undefined
-      }
+        return remounted.length === 1 ? remounted[0] : undefined;
+      };
 
       const executeSingleAction = (
         target: VisibleEntry,
         stepRef: string,
         actionName: string,
-        rawArgs: unknown
+        rawArgs: unknown,
       ): Effect.Effect<string | undefined> =>
-        Effect.gen(function*() {
-          const { tracked, contract, label } = target
-          const actionSpec = contract.actions[actionName]
+        Effect.gen(function* () {
+          const { tracked, contract, label } = target;
+          const actionSpec = contract.actions[actionName];
           if (actionSpec === undefined) {
-            const allowed = Object.keys(contract.actions).join(", ")
-            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`
+            const allowed = Object.keys(contract.actions).join(", ");
+            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`;
           }
 
           if (!checkEnabledSafe(actionSpec.enabled, tracked.model)) {
@@ -770,51 +920,63 @@ export const make = (options: {
               label,
               action: actionName,
               secret: actionSpec.secret === true,
-              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+              args:
+                actionSpec.secret === true
+                  ? "[Redacted]"
+                  : scrubRedacted(rawArgs ?? {}),
               confirmed: false,
               ok: false,
-              error: `Action "${actionName}" is currently disabled`
-            })
-            return `Action "${actionName}" is currently disabled`
+              error: `Action "${actionName}" is currently disabled`,
+            });
+            return `Action "${actionName}" is currently disabled`;
           }
 
-          const decoded = yield* Schema.decodeEffect(actionSpec.args)(rawArgs ?? {}, {
-            onExcessProperty: "error"
-          }).pipe(Effect.result)
+          const decoded = yield* Schema.decodeEffect(actionSpec.args)(
+            rawArgs ?? {},
+            {
+              onExcessProperty: "error",
+            },
+          ).pipe(Effect.result);
 
           if (Result.isFailure(decoded)) {
-            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`
+            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`;
             auditLog.push({
               ref: tracked.path,
               label,
               action: actionName,
               secret: actionSpec.secret === true,
-              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+              args:
+                actionSpec.secret === true
+                  ? "[Redacted]"
+                  : scrubRedacted(rawArgs ?? {}),
               confirmed: false,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
 
-          const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
+          const safeArgs =
+            actionSpec.secret === true
+              ? "[Redacted]"
+              : scrubRedacted(decoded.success);
 
           const checkModel = (model: unknown): string | undefined => {
-            if (actionSpec.check === undefined) return undefined
-            let rejection: string | undefined
+            if (actionSpec.check === undefined) return undefined;
+            let rejection: string | undefined;
             try {
-              rejection = actionSpec.check(model, decoded.success)
+              rejection = actionSpec.check(model, decoded.success);
             } catch {
-              return `Action "${actionName}" cannot run with these arguments`
+              return `Action "${actionName}" cannot run with these arguments`;
             }
-            if (rejection === undefined) return undefined
-            const trimmed = rejection.trim()
+            if (rejection === undefined) return undefined;
+            const trimmed = rejection.trim();
             return trimmed.length > 0
               ? trimmed
-              : `Action "${actionName}" cannot run with these arguments`
-          }
+              : `Action "${actionName}" cannot run with these arguments`;
+          };
 
-          const initialRejection = checkModel(tracked.model)
+          const initialRejection = checkModel(tracked.model);
           if (initialRejection !== undefined) {
             auditLog.push({
               ref: tracked.path,
@@ -824,19 +986,23 @@ export const make = (options: {
               args: safeArgs,
               confirmed: false,
               ok: false,
-              error: initialRejection
-            })
-            return initialRejection
+              error: initialRejection,
+            });
+            return initialRejection;
           }
 
-          let confirmText: string | undefined
+          let confirmText: string | undefined;
           if (typeof actionSpec.confirm === "string") {
-            confirmText = actionSpec.confirm
+            confirmText = actionSpec.confirm;
           } else if (typeof actionSpec.confirm === "function") {
-            const confirmFn = actionSpec.confirm
-            const confirmRes = yield* Effect.try(() => confirmFn(tracked.model, decoded.success)).pipe(Effect.result)
+            const confirmFn = actionSpec.confirm;
+            const confirmRes = yield* Effect.try({
+              try: () => confirmFn(tracked.model, decoded.success),
+              catch: (error) =>
+                new BridgeCallbackError({ message: String(error) }),
+            }).pipe(Effect.result);
             if (Result.isFailure(confirmRes)) {
-              const reason = `Confirmation check failed for "${actionName}"`
+              const reason = `Confirmation check failed for "${actionName}"`;
               auditLog.push({
                 ref: tracked.path,
                 label,
@@ -845,17 +1011,17 @@ export const make = (options: {
                 args: safeArgs,
                 confirmed: false,
                 ok: false,
-                error: reason
-              })
-              return reason
+                error: reason,
+              });
+              return reason;
             }
-            confirmText = confirmRes.success
+            confirmText = confirmRes.success;
           }
 
-          let confirmed = false
+          let confirmed = false;
           if (confirmText !== undefined) {
             if (allow === undefined) {
-              const reason = `Needs a person: ${confirmText}`
+              const reason = `Needs a person: ${confirmText}`;
               auditLog.push({
                 ref: tracked.path,
                 label,
@@ -864,26 +1030,34 @@ export const make = (options: {
                 args: safeArgs,
                 confirmed: false,
                 ok: false,
-                error: reason
-              })
-              return reason
+                error: reason,
+              });
+              return reason;
             }
-            const approvalResult = yield* Effect.tryPromise(() =>
-              Promise.resolve().then(() =>
-                allow(
-                  {
-                    ref: tracked.path,
-                    label,
-                    action: actionName,
-                    confirm: confirmText,
-                    args: safeArgs
-                  },
-                  { signal: callOptions?.signal }
-                )
-              )
-            ).pipe(Effect.result)
+            const approvalResult = yield* Effect.tryPromise({
+              try: (signal) => {
+                const mergedSignal =
+                  callOptions?.signal !== undefined
+                    ? AbortSignal.any([signal, callOptions.signal])
+                    : signal;
+                return Promise.resolve().then(() =>
+                  allow(
+                    {
+                      ref: tracked.path,
+                      label,
+                      action: actionName,
+                      confirm: confirmText,
+                      args: safeArgs,
+                    },
+                    { signal: mergedSignal },
+                  ),
+                );
+              },
+              catch: (error) =>
+                new BridgeCallbackError({ message: String(error) }),
+            }).pipe(Effect.result);
             if (Result.isFailure(approvalResult)) {
-              const reason = "Confirmation handler failed"
+              const reason = "Confirmation handler failed";
               auditLog.push({
                 ref: tracked.path,
                 label,
@@ -892,13 +1066,13 @@ export const make = (options: {
                 args: safeArgs,
                 confirmed: false,
                 ok: false,
-                error: reason
-              })
-              return reason
+                error: reason,
+              });
+              return reason;
             }
-            const approved = approvalResult.success === true
+            const approved = approvalResult.success === true;
             if (!approved) {
-              const reason = `Denied by person: ${confirmText}`
+              const reason = `Denied by person: ${confirmText}`;
               auditLog.push({
                 ref: tracked.path,
                 label,
@@ -907,44 +1081,60 @@ export const make = (options: {
                 args: safeArgs,
                 confirmed: false,
                 ok: false,
-                error: reason
-              })
-              return reason
+                error: reason,
+              });
+              return reason;
             }
-            confirmed = true
+            confirmed = true;
 
-            syncAll()
-            const current = instances.get(tracked.instance)
-            let postConfirmFailure: string | undefined
-            if (current === undefined || checkHidden(contract, current.model) !== "visible") {
-              postConfirmFailure = `No visible control matches ref "${stepRef}"`
+            syncAll();
+            const current = instances.get(tracked.instance);
+            let postConfirmFailure: string | undefined;
+            if (
+              current === undefined ||
+              checkHidden(contract, current.model) !== "visible"
+            ) {
+              postConfirmFailure = `No visible control matches ref "${stepRef}"`;
             } else {
-              const stillEnabled = checkEnabledSafe(actionSpec.enabled, current.model)
+              const stillEnabled = checkEnabledSafe(
+                actionSpec.enabled,
+                current.model,
+              );
               if (!stillEnabled) {
-                postConfirmFailure = `Action "${actionName}" is currently disabled`
+                postConfirmFailure = `Action "${actionName}" is currently disabled`;
               } else {
-                const recheck = checkModel(current.model)
+                const recheck = checkModel(current.model);
                 if (recheck !== undefined) {
-                  postConfirmFailure = recheck
+                  postConfirmFailure = recheck;
                 } else {
-                  const currentLabel = labelOfSafe(contract, current.model, current.component)
-                  let currentConfirmText: string | undefined
-                  let confirmThrew = false
+                  const currentLabel = labelOfSafe(
+                    contract,
+                    current.model,
+                    current.component,
+                  );
+                  let currentConfirmText: string | undefined;
+                  let confirmThrew = false;
                   if (typeof actionSpec.confirm === "string") {
-                    currentConfirmText = actionSpec.confirm
+                    currentConfirmText = actionSpec.confirm;
                   } else if (typeof actionSpec.confirm === "function") {
-                    const confirmFn = actionSpec.confirm
-                    const currentConfirmRes = yield* Effect.try(() =>
-                      confirmFn(current.model, decoded.success)
-                    ).pipe(Effect.result)
+                    const confirmFn = actionSpec.confirm;
+                    const currentConfirmRes = yield* Effect.try({
+                      try: () => confirmFn(current.model, decoded.success),
+                      catch: (error) =>
+                        new BridgeCallbackError({ message: String(error) }),
+                    }).pipe(Effect.result);
                     if (Result.isFailure(currentConfirmRes)) {
-                      confirmThrew = true
+                      confirmThrew = true;
                     } else {
-                      currentConfirmText = currentConfirmRes.success
+                      currentConfirmText = currentConfirmRes.success;
                     }
                   }
-                  if (confirmThrew || currentLabel !== label || currentConfirmText !== confirmText) {
-                    postConfirmFailure = `Approval for "${actionName}" on "${label}" is stale because the target changed. Ask the person again.`
+                  if (
+                    confirmThrew ||
+                    currentLabel !== label ||
+                    currentConfirmText !== confirmText
+                  ) {
+                    postConfirmFailure = `Approval for "${actionName}" on "${label}" is stale because the target changed. Ask the person again.`;
                   }
                 }
               }
@@ -958,18 +1148,24 @@ export const make = (options: {
                 args: safeArgs,
                 confirmed: true,
                 ok: false,
-                error: postConfirmFailure
-              })
-              return postConfirmFailure
+                error: postConfirmFailure,
+              });
+              return postConfirmFailure;
             }
           }
 
-          const msgRes = yield* Effect.try((): unknown => {
-            const built: unknown = actionSpec.toMessage(decoded.success, { source: "agent" })
-            return built
-          }).pipe(Effect.result)
+          const msgRes = yield* Effect.try({
+            try: (): unknown => {
+              const built: unknown = actionSpec.toMessage(decoded.success, {
+                source: "agent",
+              });
+              return built;
+            },
+            catch: (error) =>
+              new BridgeCallbackError({ message: String(error) }),
+          }).pipe(Effect.result);
           if (Result.isFailure(msgRes)) {
-            const reason = `Action "${actionName}" failed to build message`
+            const reason = `Action "${actionName}" failed to build message`;
             auditLog.push({
               ref: tracked.path,
               label,
@@ -978,15 +1174,19 @@ export const make = (options: {
               args: safeArgs,
               confirmed,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
-          const msg: unknown = msgRes.success
+          const msg: unknown = msgRes.success;
 
-          const dispatchRes = yield* dispatchTo(tracked.instance, tracked.path, msg)
+          const dispatchRes = yield* dispatchTo(
+            tracked.instance,
+            tracked.path,
+            msg,
+          );
           if (!dispatchRes.ok) {
-            const reason = `Dispatch failed for action "${actionName}" on "${tracked.path}"`
+            const reason = `Dispatch failed for action "${actionName}" on "${tracked.path}"`;
             auditLog.push({
               ref: tracked.path,
               label,
@@ -995,12 +1195,12 @@ export const make = (options: {
               args: safeArgs,
               confirmed,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
           if (!dispatchRes.dispatched) {
-            const reason = `No mounted dispatcher accepted action "${actionName}" for "${tracked.path}"`
+            const reason = `No mounted dispatcher accepted action "${actionName}" for "${tracked.path}"`;
             auditLog.push({
               ref: tracked.path,
               label,
@@ -1009,9 +1209,9 @@ export const make = (options: {
               args: safeArgs,
               confirmed,
               ok: false,
-              error: reason
-            })
-            return reason
+              error: reason,
+            });
+            return reason;
           }
 
           auditLog.push({
@@ -1021,176 +1221,213 @@ export const make = (options: {
             secret: actionSpec.secret === true,
             args: safeArgs,
             confirmed,
-            ok: true
-          })
-          return undefined
-        })
+            ok: true,
+          });
+          return undefined;
+        });
 
       const resolveVisibleOrReveal = (
         ref: string,
         visited: ReadonlySet<number>,
         depth: number,
-        pendingAction: { readonly action: string; readonly rawArgs: unknown }
+        pendingAction: { readonly action: string; readonly rawArgs: unknown },
       ): Effect.Effect<
         | { readonly ok: true; readonly target: VisibleEntry }
         | { readonly ok: false; readonly error: string }
       > =>
-        Effect.gen(function*() {
-          syncAll()
-          const visible = visibleEntries(false)
-          const hidden = hiddenRevealEntries(false)
+        Effect.gen(function* () {
+          syncAll();
+          const visible = visibleEntries(false);
+          const hidden = hiddenRevealEntries(false);
 
-          const exactVisible = matchExactByRef(visible, ref)
-          const [firstExactVisible] = exactVisible
+          const exactVisible = matchExactByRef(visible, ref);
+          const [firstExactVisible] = exactVisible;
           if (exactVisible.length === 1 && firstExactVisible !== undefined) {
-            return { ok: true as const, target: firstExactVisible }
+            return { ok: true as const, target: firstExactVisible };
           }
           if (exactVisible.length > 1) {
-            const refs = exactVisible.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-            return { ok: false as const, error: `Ambiguous ref "${ref}": matched ${refs}` }
+            const refs = exactVisible
+              .map((m) => `${m.label} (${m.tracked.path})`)
+              .join(", ");
+            return {
+              ok: false as const,
+              error: `Ambiguous ref "${ref}": matched ${refs}`,
+            };
           }
 
-          let hiddenTarget: HiddenRevealEntry | undefined
-          const exactHidden = matchExactByRef(hidden, ref)
-          const [firstExactHidden] = exactHidden
+          let hiddenTarget: HiddenRevealEntry | undefined;
+          const exactHidden = matchExactByRef(hidden, ref);
+          const [firstExactHidden] = exactHidden;
           if (exactHidden.length === 1 && firstExactHidden !== undefined) {
-            hiddenTarget = firstExactHidden
+            hiddenTarget = firstExactHidden;
           } else if (exactHidden.length > 1) {
-            const refs = exactHidden.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-            return { ok: false as const, error: `Ambiguous hidden ref "${ref}": matched ${refs}` }
+            const refs = exactHidden
+              .map((m) => `${m.label} (${m.tracked.path})`)
+              .join(", ");
+            return {
+              ok: false as const,
+              error: `Ambiguous hidden ref "${ref}": matched ${refs}`,
+            };
           } else {
-            const subVisible = matchSubstringByRef(visible, ref)
-            const [firstSubVisible] = subVisible
+            const subVisible = matchSubstringByRef(visible, ref);
+            const [firstSubVisible] = subVisible;
             if (subVisible.length === 1 && firstSubVisible !== undefined) {
-              return { ok: true as const, target: firstSubVisible }
+              return { ok: true as const, target: firstSubVisible };
             }
             if (subVisible.length > 1) {
-              const refs = subVisible.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-              return { ok: false as const, error: `Ambiguous ref "${ref}": matched ${refs}` }
+              const refs = subVisible
+                .map((m) => `${m.label} (${m.tracked.path})`)
+                .join(", ");
+              return {
+                ok: false as const,
+                error: `Ambiguous ref "${ref}": matched ${refs}`,
+              };
             }
 
-            const subHidden = matchSubstringByRef(hidden, ref)
-            const [firstSubHidden] = subHidden
+            const subHidden = matchSubstringByRef(hidden, ref);
+            const [firstSubHidden] = subHidden;
             if (subHidden.length === 0 || firstSubHidden === undefined) {
-              return { ok: false as const, error: `No visible control matches ref "${ref}"` }
+              return {
+                ok: false as const,
+                error: `No visible control matches ref "${ref}"`,
+              };
             }
             if (subHidden.length > 1) {
-              const refs = subHidden.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
-              return { ok: false as const, error: `Ambiguous hidden ref "${ref}": matched ${refs}` }
+              const refs = subHidden
+                .map((m) => `${m.label} (${m.tracked.path})`)
+                .join(", ");
+              return {
+                ok: false as const,
+                error: `Ambiguous hidden ref "${ref}": matched ${refs}`,
+              };
             }
-            hiddenTarget = firstSubHidden
+            hiddenTarget = firstSubHidden;
           }
 
           if (visited.has(hiddenTarget.tracked.instance)) {
             return {
               ok: false as const,
-              error: `Reveal cycle detected while attempting to reveal "${hiddenTarget.label}"`
-            }
+              error: `Reveal cycle detected while attempting to reveal "${hiddenTarget.label}"`,
+            };
           }
           if (depth >= MAX_REVEAL_DEPTH) {
             return {
               ok: false as const,
-              error: `Exceeded maximum auto-reveal depth (${MAX_REVEAL_DEPTH}) for "${hiddenTarget.label}"`
-            }
+              error: `Exceeded maximum auto-reveal depth (${MAX_REVEAL_DEPTH}) for "${hiddenTarget.label}"`,
+            };
           }
 
           const preValidationError = yield* preValidateHiddenAction(
             hiddenTarget,
             pendingAction.action,
-            pendingAction.rawArgs
-          )
+            pendingAction.rawArgs,
+          );
           if (preValidationError !== undefined) {
-            return { ok: false as const, error: preValidationError }
+            return { ok: false as const, error: preValidationError };
           }
 
           if (!RevealResolution.$is("Ok")(hiddenTarget.revealedBy)) {
-            const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`
-            const actionSpec = hiddenTarget.contract.actions[pendingAction.action]
+            const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`;
+            const actionSpec =
+              hiddenTarget.contract.actions[pendingAction.action];
             auditLog.push({
               ref: hiddenTarget.tracked.path,
               label: hiddenTarget.label,
               action: pendingAction.action,
               secret: actionSpec?.secret === true,
-              args: actionSpec?.secret === true ? "[Redacted]" : scrubRedacted(pendingAction.rawArgs ?? {}),
+              args:
+                actionSpec?.secret === true
+                  ? "[Redacted]"
+                  : scrubRedacted(pendingAction.rawArgs ?? {}),
               confirmed: false,
               ok: false,
-              error: reason
-            })
-            return { ok: false as const, error: reason }
+              error: reason,
+            });
+            return { ok: false as const, error: reason };
           }
 
-          const initialReveal = hiddenTarget.revealedBy.spec
-          const nextVisited = new Set(visited)
-          nextVisited.add(hiddenTarget.tracked.instance)
+          const initialReveal = hiddenTarget.revealedBy.spec;
+          const nextVisited = new Set(visited);
+          nextVisited.add(hiddenTarget.tracked.instance);
 
-          const revealsBefore = reveals.length
+          const revealsBefore = reveals.length;
           const containerRes = yield* resolveVisibleOrReveal(
             initialReveal.container,
             nextVisited,
             depth + 1,
-            { action: initialReveal.action, rawArgs: initialReveal.rawArgs }
-          )
+            { action: initialReveal.action, rawArgs: initialReveal.rawArgs },
+          );
           if (!containerRes.ok) {
-            return containerRes
+            return containerRes;
           }
 
-          let effectiveContainer = containerRes.target
-          let effectiveReveal = initialReveal
+          let effectiveContainer = containerRes.target;
+          let effectiveReveal = initialReveal;
 
           if (reveals.length > revealsBefore) {
-            syncAll()
-            const alreadyVisible = findVisibleTarget(hiddenTarget)
+            syncAll();
+            const alreadyVisible = findVisibleTarget(hiddenTarget);
             if (alreadyVisible !== undefined) {
-              return { ok: true as const, target: alreadyVisible }
+              return { ok: true as const, target: alreadyVisible };
             }
 
-            const refreshedInstance = findTrackedInstance(hiddenTarget)
+            const refreshedInstance = findTrackedInstance(hiddenTarget);
             if (refreshedInstance === undefined) {
               return {
                 ok: false as const,
-                error: `No visible control matches ref "${ref}"`
-              }
+                error: `No visible control matches ref "${ref}"`,
+              };
             }
 
-            const refreshedReveal = resolveRevealOf(hiddenTarget.contract, refreshedInstance.model)
+            const refreshedReveal = resolveRevealOf(
+              hiddenTarget.contract,
+              refreshedInstance.model,
+            );
             if (RevealResolution.$is("Error")(refreshedReveal)) {
-              const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`
-              const actionSpec = hiddenTarget.contract.actions[pendingAction.action]
+              const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`;
+              const actionSpec =
+                hiddenTarget.contract.actions[pendingAction.action];
               auditLog.push({
                 ref: refreshedInstance.path,
                 label: hiddenTarget.label,
                 action: pendingAction.action,
                 secret: actionSpec?.secret === true,
-                args: actionSpec?.secret === true ? "[Redacted]" : scrubRedacted(pendingAction.rawArgs ?? {}),
+                args:
+                  actionSpec?.secret === true
+                    ? "[Redacted]"
+                    : scrubRedacted(pendingAction.rawArgs ?? {}),
                 confirmed: false,
                 ok: false,
-                error: reason
-              })
-              return { ok: false as const, error: reason }
+                error: reason,
+              });
+              return { ok: false as const, error: reason };
             }
             if (RevealResolution.$is("None")(refreshedReveal)) {
               return {
                 ok: false as const,
-                error: `No visible control matches ref "${ref}"`
-              }
+                error: `No visible control matches ref "${ref}"`,
+              };
             }
 
-            effectiveReveal = refreshedReveal.spec
+            effectiveReveal = refreshedReveal.spec;
             if (effectiveReveal.container !== initialReveal.container) {
               const nextContainerRes = yield* resolveVisibleOrReveal(
                 effectiveReveal.container,
                 nextVisited,
                 depth + 1,
-                { action: effectiveReveal.action, rawArgs: effectiveReveal.rawArgs }
-              )
+                {
+                  action: effectiveReveal.action,
+                  rawArgs: effectiveReveal.rawArgs,
+                },
+              );
               if (!nextContainerRes.ok) {
-                return nextContainerRes
+                return nextContainerRes;
               }
-              effectiveContainer = nextContainerRes.target
-              syncAll()
-              const nowVisible = findVisibleTarget(hiddenTarget)
+              effectiveContainer = nextContainerRes.target;
+              syncAll();
+              const nowVisible = findVisibleTarget(hiddenTarget);
               if (nowVisible !== undefined) {
-                return { ok: true as const, target: nowVisible }
+                return { ok: true as const, target: nowVisible };
               }
             }
           }
@@ -1199,19 +1436,19 @@ export const make = (options: {
             effectiveContainer,
             effectiveReveal.container,
             effectiveReveal.action,
-            effectiveReveal.rawArgs ?? {}
-          )
+            effectiveReveal.rawArgs ?? {},
+          );
           if (revealErr !== undefined) {
-            return { ok: false as const, error: revealErr }
+            return { ok: false as const, error: revealErr };
           }
 
-          syncAll()
-          const revealedTarget = findVisibleTarget(hiddenTarget)
+          syncAll();
+          const revealedTarget = findVisibleTarget(hiddenTarget);
           if (revealedTarget === undefined) {
             return {
               ok: false as const,
-              error: `Reveal action "${effectiveReveal.action}" on "${effectiveContainer.label}" did not make "${hiddenTarget.label}" visible`
-            }
+              error: `Reveal action "${effectiveReveal.action}" on "${effectiveContainer.label}" did not make "${hiddenTarget.label}" visible`,
+            };
           }
 
           reveals.push({
@@ -1219,41 +1456,46 @@ export const make = (options: {
             containerRef: effectiveContainer.tracked.path,
             action: effectiveReveal.action,
             target: revealedTarget.label,
-            targetRef: revealedTarget.tracked.path
-          })
+            targetRef: revealedTarget.tracked.path,
+          });
 
           return {
             ok: true as const,
-            target: revealedTarget
-          }
-        })
+            target: revealedTarget,
+          };
+        });
 
       for (const [i, step] of input.steps.entries()) {
         const resolved = yield* resolveVisibleOrReveal(step.ref, new Set(), 0, {
           action: step.action,
-          rawArgs: step.args
-        })
+          rawArgs: step.args,
+        });
         if (!resolved.ok) {
-          return fail(i, resolved.error)
+          return fail(i, resolved.error);
         }
-        const err = yield* executeSingleAction(resolved.target, step.ref, step.action, step.args)
+        const err = yield* executeSingleAction(
+          resolved.target,
+          step.ref,
+          step.action,
+          step.args,
+        );
         if (err !== undefined) {
-          return fail(i, err)
+          return fail(i, err);
         }
-        completed++
+        completed++;
       }
 
       return {
         ok: true,
         completed,
         state: visibleState(),
-        ...(reveals.length > 0 ? { revealed: reveals } : {})
-      }
-    })
+        ...(reveals.length > 0 ? { revealed: reveals } : {}),
+      };
+    });
 
   const tools: AgentBridge["tools"] = (toolOptions) => {
-    const prefix = toolOptions?.prefix ?? "ui_"
-    const effectiveAllow = toolOptions?.allow ?? options.allow
+    const prefix = toolOptions?.prefix ?? "ui_";
+    const effectiveAllow = toolOptions?.allow ?? options.allow;
     const toolList: Array<ModelContextTool> = [
       {
         name: `${prefix}snapshot`,
@@ -1263,39 +1505,47 @@ export const make = (options: {
         inputSchema: {
           type: "object",
           properties: {
-            includeHidden: { type: "boolean" }
+            includeHidden: { type: "boolean" },
           },
-          additionalProperties: false
+          additionalProperties: false,
         },
         annotations: { readOnlyHint: true },
         execute: async (input) => {
-          const rec = isRecord(input) ? input : {}
+          const rec = isRecord(input) ? input : {};
           return snapshot({
-            includeHidden: typeof rec.includeHidden === "boolean" ? rec.includeHidden : undefined
-          })
-        }
+            includeHidden:
+              typeof rec.includeHidden === "boolean"
+                ? rec.includeHidden
+                : undefined,
+          });
+        },
       },
       {
         name: `${prefix}query`,
-        description: "Find visible or revealable controls by label, path, component name, reveal hint, or action name.",
+        description:
+          "Find visible or revealable controls by label, path, component name, reveal hint, or action name.",
         inputSchema: {
           type: "object",
           properties: {
             text: { type: "string" },
             component: { type: "string" },
-            includeHidden: { type: "boolean" }
+            includeHidden: { type: "boolean" },
           },
-          additionalProperties: false
+          additionalProperties: false,
         },
         annotations: { readOnlyHint: true },
         execute: async (input) => {
-          const rec = isRecord(input) ? input : {}
+          const rec = isRecord(input) ? input : {};
           return query({
             text: typeof rec.text === "string" ? rec.text : undefined,
-            component: typeof rec.component === "string" ? rec.component : undefined,
-            includeHidden: typeof rec.includeHidden === "boolean" ? rec.includeHidden : undefined
-          })
-        }
+            component:
+              typeof rec.component === "string" ? rec.component : undefined,
+            includeHidden:
+              typeof rec.includeHidden === "boolean"
+                ? rec.includeHidden
+                : undefined,
+          });
+        },
       },
       {
         name: `${prefix}act`,
@@ -1314,76 +1564,87 @@ export const make = (options: {
                 properties: {
                   ref: { type: "string" },
                   action: { type: "string" },
-                  args: { type: "object" }
+                  args: { type: "object" },
                 },
                 required: ["ref", "action"],
-                additionalProperties: false
-              }
-            }
+                additionalProperties: false,
+              },
+            },
           },
           required: ["steps"],
-          additionalProperties: false
+          additionalProperties: false,
         },
         annotations: { consequentialHint: true },
         execute: async (input, client) => {
-          const rec = isRecord(input) ? input : {}
-          const rawSteps = Array.isArray(rec.steps) ? rec.steps : []
-          const steps: Array<AgentStepInput> = []
+          const rec = isRecord(input) ? input : {};
+          const rawSteps = Array.isArray(rec.steps) ? rec.steps : [];
+          const steps: Array<AgentStepInput> = [];
           for (const rawStep of rawSteps) {
-            if (isRecord(rawStep) && typeof rawStep.ref === "string" && typeof rawStep.action === "string") {
+            if (
+              isRecord(rawStep) &&
+              typeof rawStep.ref === "string" &&
+              typeof rawStep.action === "string"
+            ) {
               steps.push({
                 ref: rawStep.ref,
                 action: rawStep.action,
-                ...("args" in rawStep ? { args: rawStep.args } : {})
-              })
+                ...("args" in rawStep ? { args: rawStep.args } : {}),
+              });
             }
           }
           return Effect.runPromise(
-            act({ steps }, { signal: client?.signal, allow: effectiveAllow })
-          )
-        }
-      }
-    ]
+            act({ steps }, { signal: client?.signal, allow: effectiveAllow }),
+          );
+        },
+      },
+    ];
     if (options.contracts.some((contract) => contract.rows !== undefined)) {
       toolList.push({
         name: `${prefix}query_rows`,
-        description: `Find public rows in one visible list by its exact component path or exact unique label. ` +
+        description:
+          `Find public rows in one visible list by its exact component path or exact unique label. ` +
           `Optionally match text against row labels or IDs. Offset counts matching rows, starting at 0. ` +
           `The default limit is ${defaultRowLimit}, at most ${maxRowLimit}. ` +
           `Only ready lists return rows. If more is true, add the number of returned rows to offset. This does not open a row.`,
-        inputSchema: { ...jsonSchemaOf(RowQuerySchema), additionalProperties: false },
+        inputSchema: {
+          ...jsonSchemaOf(RowQuerySchema),
+          additionalProperties: false,
+        },
         annotations: { readOnlyHint: true },
-        execute: async (input) => queryRows(input)
-      })
+        execute: async (input) => queryRows(input),
+      });
     }
-    return toolList
-  }
+    return toolList;
+  };
 
   const registerWebMcp: AgentBridge["registerWebMcp"] = (context, regOptions) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const controller = new AbortController()
-        for (const tool of tools({ prefix: regOptions.prefix, allow: regOptions.allow })) {
-          context.registerTool(tool, { signal: controller.signal })
+        const controller = new AbortController();
+        for (const tool of tools({
+          prefix: regOptions.prefix,
+          allow: regOptions.allow,
+        })) {
+          context.registerTool(tool, { signal: controller.signal });
         }
-        return controller
+        return controller;
       }),
-      (controller) => Effect.sync(() => controller.abort())
-    ).pipe(Effect.asVoid)
+      (controller) => Effect.sync(() => controller.abort()),
+    ).pipe(Effect.asVoid);
 
   return {
     messageLog,
     registerControllable: (root) => {
-      controllables.add(root)
+      controllables.add(root);
       return () => {
-        controllables.delete(root)
-      }
+        controllables.delete(root);
+      };
     },
     attachDispatcher: (dispatcher) => {
-      dispatchers.add(dispatcher)
+      dispatchers.add(dispatcher);
       return () => {
-        dispatchers.delete(dispatcher)
-      }
+        dispatchers.delete(dispatcher);
+      };
     },
     snapshot,
     query,
@@ -1391,79 +1652,80 @@ export const make = (options: {
     act,
     audit: () => [...auditLog],
     tools,
-    registerWebMcp
-  }
-}
+    registerWebMcp,
+  };
+};
 
 export const attachTestRoot = <Model, Msg, Events>(
   bridge: AgentBridge,
-  root: TestHost.Root<Model, Msg, Events>
+  root: TestHost.Root<Model, Msg, Events>,
 ): Effect.Effect<void, never, Scope.Scope | TestHost.TestHost> =>
-  Effect.gen(function*() {
-    const testHost = yield* TestHost.TestHost
-    let seen = 0
+  Effect.gen(function* () {
+    const testHost = yield* TestHost.TestHost;
+    let seen = 0;
     const sync = () => {
-      const entries = root.log()
+      const entries = root.log();
       while (seen < entries.length) {
-        const entry = entries[seen++]
+        const entry = entries[seen++];
         if (entry !== undefined) {
-          bridge.messageLog.record(entry)
+          bridge.messageLog.record(entry);
         }
       }
-    }
-    sync()
+    };
+    sync();
     yield* Effect.acquireRelease(
       Effect.sync(() =>
         bridge.attachDispatcher({
           sync,
           dispatch: (_instance, path, message) => {
-            if (path !== root.path) return Effect.succeed(false)
+            if (path !== root.path) return Effect.succeed(false);
             // SAFETY: Dispatcher receives messages built by the matching component contract's toMessage for root.path.
             // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- TestHost.Root.send is contravariant in Msg while Dispatcher erases message types across heterogeneous contracts
             return Effect.sync(() => root.send(message as Msg)).pipe(
               Effect.andThen(TestHost.settle.pipe(Effect.orDie)),
               Effect.tap(() => Effect.sync(sync)),
               Effect.provideService(TestHost.TestHost, testHost),
-              Effect.as(true)
-            )
-          }
-        })
+              Effect.as(true),
+            );
+          },
+        }),
       ),
-      (detach) => Effect.sync(detach)
-    )
-  })
+      (detach) => Effect.sync(detach),
+    );
+  });
 
 export const layer = (options: {
-  readonly contracts: ReadonlyArray<AgentContract<any, any>>
-  readonly allow?: AllowCallback | undefined
+  // oxlint-disable-next-line typescript/no-explicit-any -- heterogeneous contract array accepts distinct component models/messages
+  readonly contracts: ReadonlyArray<AgentContract<any, any>>;
+  readonly allow?: AllowCallback | undefined;
 }): Layer.Layer<AgentBridgeService> => {
-  const bridge = make(options)
+  const bridge = make(options);
   return Layer.mergeAll(
     Layer.succeed(AgentBridgeService, bridge),
     Layer.effect(
       MessageLog.MessageLog,
-      Effect.gen(function*() {
-        const upstream = yield* MessageLog.MessageLog
+      Effect.gen(function* () {
+        const upstream = yield* MessageLog.MessageLog;
         return upstream.enabled
           ? MessageLog.fanoutAll([upstream, bridge.messageLog])
-          : bridge.messageLog
-      })
+          : bridge.messageLog;
+      }),
     ),
     Layer.effect(
       BrowserHost.Controllables,
-      Effect.gen(function*() {
-        const upstream = yield* BrowserHost.Controllables
+      Effect.gen(function* () {
+        const upstream = yield* BrowserHost.Controllables;
         return {
           register: (root: BrowserHost.Controllable) => {
-            const unregisterUpstream = upstream.register(root)
-            const unregisterBridge = bridge.registerControllable(root)
+            const unregisterUpstream = upstream.register(root);
+            const unregisterBridge = bridge.registerControllable(root);
             return () => {
-              unregisterBridge()
-              unregisterUpstream()
-            }
-          }
-        }
-      })
-    )
-  )
-}
+              unregisterBridge();
+              unregisterUpstream();
+            };
+          },
+        };
+      }),
+    ),
+  );
+};
