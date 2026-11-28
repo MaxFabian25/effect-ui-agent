@@ -9,7 +9,14 @@
     "exactOptionalPropertyTypes": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "includeSuggestionsInTsc": false,
+        "allowedExperimentalApis": ["@effect/ui", "@effect/ui-kit"]
+      }
+    ]
   },
   "include": ["src", "tests"]
 }

@@ -37,12 +37,13 @@
   },
   "files": [
     "dist",
+    "AGENTS.md",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "lint": "effect-tsgo oxlint --type-aware",
-    "check": "tsc --noEmit",
+    "check": "effect-tsgo tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test"
   },

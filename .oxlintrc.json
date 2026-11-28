@@ -30,8 +30,6 @@
     "tools/oxlint/anti-slop/**"
   ],
   "rules": {
-    "effecttsgo/experimental-api-usage": "off",
-    "effecttsgo/unstable-api-usage": "off",
     "eqeqeq": "error",
     "import/no-self-import": "error",
     "import/consistent-type-specifier-style": ["error", "prefer-top-level"],
