@@ -24,11 +24,11 @@ describe("Native Effect UI AgentBridge", () => {
 
           const snap = bridge.snapshot()
           expect(snap).toHaveLength(1)
-          expect(snap[0]!.label).toBe("Project settings")
+          expect(snap[0]?.label).toBe("Project settings")
           // Defense-in-depth: Redacted field returned by state() is scrubbed automatically
-          expect(snap[0]!.state.apiKey).toBe("[Redacted]")
+          expect(snap[0]?.state.apiKey).toBe("[Redacted]")
           expect(JSON.stringify(snap)).not.toContain("sk-initial-super-secret")
-          expect(snap[0]!.actions.map((a) => a.name)).toContain("setVisibility")
+          expect(snap[0]?.actions.map((a) => a.name)).toContain("setVisibility")
           assertActionDiscoverable(bridge, { label: "Project settings", action: "setVisibility" })
 
           const queried = bridge.query({ text: "visibility" })
@@ -63,8 +63,8 @@ describe("Native Effect UI AgentBridge", () => {
 
           yield* play.expect(Locator.tag("h1")).toHaveText("Atlas")
           yield* play.expect(HtmlLocator.role("textbox", { name: "Project name" })).toHaveValue("Atlas")
-          expect(bridge.snapshot()[0]!.state.visibility).toBe("internal")
-          expect(bridge.snapshot()[0]!.state.weeklyDigest).toBe(true)
+          expect(bridge.snapshot()[0]?.state.visibility).toBe("internal")
+          expect(bridge.snapshot()[0]?.state.weeklyDigest).toBe(true)
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -152,11 +152,13 @@ describe("Native Effect UI AgentBridge", () => {
           })
           expect(result.ok).toBe(true)
           expect(JSON.stringify(result)).not.toContain("sk-live-98765")
-          expect(result.state[0]!.state.apiKey).toBe("[Redacted]")
-          expect(Redacted.value(play.root.model()!.apiKey)).toBe("sk-live-98765")
+          expect(result.state[0]?.state.apiKey).toBe("[Redacted]")
+          const updatedModel = play.root.model()
+          if (updatedModel === undefined) throw new Error("Expected mounted model")
+          expect(Redacted.value(updatedModel.apiKey)).toBe("sk-live-98765")
           expect(JSON.stringify(bridge.snapshot())).not.toContain("sk-live-98765")
           expect(JSON.stringify(bridge.audit())).not.toContain("sk-live-98765")
-          expect(bridge.audit()[0]!.args).toBe("[Redacted]")
+          expect(bridge.audit()[0]?.args).toBe("[Redacted]")
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -194,7 +196,7 @@ describe("Native Effect UI AgentBridge", () => {
           })
           expect(blocked.ok).toBe(false)
           expect(blocked.error?.message).toBe('Needs a person: Deletes "Atlas" and all its files')
-          expect(play.root.model()!.deleted).toBe(false)
+          expect(play.root.model()?.deleted).toBe(false)
 
           // allow returns false => refused
           const prompts: Array<string> = []
@@ -209,7 +211,7 @@ describe("Native Effect UI AgentBridge", () => {
           )
           expect(denied.ok).toBe(false)
           expect(prompts).toEqual(['Deletes "Atlas" and all its files'])
-          expect(play.root.model()!.deleted).toBe(false)
+          expect(play.root.model()?.deleted).toBe(false)
 
           // allow returns true => runs and disables deleteProject afterwards
           const approved = yield* bridge.act(
@@ -217,7 +219,7 @@ describe("Native Effect UI AgentBridge", () => {
             { allow: () => true }
           )
           expect(approved.ok).toBe(true)
-          expect(play.root.model()!.deleted).toBe(true)
+          expect(play.root.model()?.deleted).toBe(true)
           assertActionNotDiscoverable(bridge, selector)
         }).pipe(
           Effect.provide(
@@ -243,11 +245,11 @@ describe("Native Effect UI AgentBridge", () => {
           yield* bridge.act({
             steps: [{ ref: "Project settings", action: "setName", args: { name: "Hijacked" } }]
           })
-          expect(play.root.model()!.name).toBe("Default project")
+          expect(play.root.model()?.name).toBe("Default project")
           yield* play.expect(HtmlLocator.role("status")).toHaveText("Agent edits are blocked by workspace policy")
 
           yield* play.type(HtmlLocator.role("textbox", { name: "Project name" }), "Human edit")
-          expect(play.root.model()!.name).toBe("Human edit")
+          expect(play.root.model()?.name).toBe("Human edit")
 
           // Showing recovery codes hides the component from agents completely
           play.root.send(SettingsMessage.ToggledRecoveryCodes())
@@ -298,7 +300,8 @@ describe("Native Effect UI AgentBridge", () => {
           ])
           expect(registered.every((r) => r.signal?.aborted === false)).toBe(true)
 
-          const actTool = registered.find((r) => r.tool.name === "app_act")!.tool
+          const actTool = registered.find((r) => r.tool.name === "app_act")?.tool
+          if (actTool === undefined) throw new Error("Expected app_act tool to be registered")
           const res = yield* Effect.promise(() =>
             actTool.execute({
               steps: [{ ref: "Project settings", action: "setName", args: { name: "Via WebMCP" } }]
@@ -315,7 +318,7 @@ describe("Native Effect UI AgentBridge", () => {
               }
             ]
           })
-          expect(play.root.model()!.name).toBe("Via WebMCP")
+          expect(play.root.model()?.name).toBe("Via WebMCP")
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
