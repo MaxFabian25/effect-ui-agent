@@ -9,15 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.5"
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run check
-      - run: bun run build
-      - run: bun test
+  verify:
+    uses: MaxFabian25/effect-config/.github/workflows/effect-verify.yml@a4ebfb903556d2a48df17f0eb223f9cd32c9d81e
+    with:
+      run-faults: true
+      test-command: "bun run build && bun test"
