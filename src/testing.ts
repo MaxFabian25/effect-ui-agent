@@ -1,13 +1,16 @@
 import type { AgentBridge, SnapshotAction, SnapshotEntry } from "./AgentBridge.js"
 
-export type ActionSelector = { readonly action: SnapshotAction["name"] } & (
+export type ActionSelector = {
+  readonly action: SnapshotAction["name"]
+  readonly includeHidden?: boolean | undefined
+} & (
   | (Pick<SnapshotEntry, "label"> & { readonly ref?: never })
   | (Pick<SnapshotEntry, "ref"> & { readonly label?: never })
 )
 
 const assertMatchCount = (
   bridge: Pick<AgentBridge, "snapshot">,
-  { action, label, ref }: ActionSelector,
+  { action, label, ref, includeHidden }: ActionSelector,
   expected: 0 | 1
 ): void => {
   const field = ref === undefined ? "label" : "ref"
@@ -17,7 +20,7 @@ const assertMatchCount = (
   }
 
   let matches = 0
-  for (const entry of bridge.snapshot()) {
+  for (const entry of bridge.snapshot({ includeHidden: includeHidden ?? false })) {
     if (entry[field] === target) {
       matches += entry.actions.filter(({ name }) => name === action).length
     }
