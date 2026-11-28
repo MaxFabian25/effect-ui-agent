@@ -3,7 +3,8 @@ import { UiSchema } from "@effect/ui"
 import { Html } from "@effect/ui/html"
 import { HtmlPlay } from "@effect/ui/html/testing"
 import { TestHost } from "@effect/ui/testing"
-import { Effect, Layer, Redacted, Schema } from "effect"
+import type { Redacted } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import * as AgentBridge from "../src/index.ts"
 
@@ -26,7 +27,7 @@ const QueueWidget = Html.component({
     enabled: Schema.Boolean,
     selectedId: Schema.NullOr(Schema.String),
     deletedIds: Schema.Array(Schema.String),
-    dispatches: Schema.Number
+    dispatches: Schema.Finite
   }),
   message: QueueMsg
 }).make({
@@ -160,8 +161,8 @@ describe("AgentActionSpec.check", () => {
             completed: 0,
             error: { step: 0, message: "This review is no longer in the queue. Search again." }
           })
-          expect(play.root.model()!.selectedId).toBeNull()
-          expect(play.root.model()!.dispatches).toBe(0)
+          expect(play.root.model()?.selectedId).toBeNull()
+          expect(play.root.model()?.dispatches).toBe(0)
           expect(bridge.audit()).toEqual([
             {
               ref: "/QueueWidget",
@@ -183,8 +184,8 @@ describe("AgentActionSpec.check", () => {
             completed: 1,
             state: [{ ref: "/QueueWidget", label: "Review queue", state: { selectedId: "live", deletedIds: [] } }]
           })
-          expect(play.root.model()!.selectedId).toBe("live")
-          expect(play.root.model()!.dispatches).toBe(1)
+          expect(play.root.model()?.selectedId).toBe("live")
+          expect(play.root.model()?.dispatches).toBe(1)
         })
       )
     ))
@@ -213,8 +214,8 @@ describe("AgentActionSpec.check", () => {
             error: { step: 1, message: "This review is no longer in the queue. Search again." },
             state: [{ ref: "/QueueWidget", label: "Review queue", state: { selectedId: "live", deletedIds: [] } }]
           })
-          expect(play.root.model()!.selectedId).toBe("live")
-          expect(play.root.model()!.dispatches).toBe(1)
+          expect(play.root.model()?.selectedId).toBe("live")
+          expect(play.root.model()?.dispatches).toBe(1)
           expect(bridge.audit()).toEqual([
             {
               ref: "/QueueWidget",
@@ -245,12 +246,11 @@ describe("AgentActionSpec.check", () => {
       provideQueue(
         Effect.gen(function*() {
           const bridge = yield* AgentBridge.AgentBridgeService
-          const testHost = yield* TestHost.TestHost
+          const services = yield* Effect.context<TestHost.TestHost>()
           const play = yield* HtmlPlay.make(QueueWidget, {})
           yield* AgentBridge.attachTestRoot(bridge, play.root)
 
-          const settle = () =>
-            Effect.runPromise(TestHost.settle.pipe(Effect.provideService(TestHost.TestHost, testHost)))
+          const settle = () => Effect.runPromiseWith(services)(TestHost.settle)
 
           play.root.send(QueueMsg.SetRows({ rows: [{ id: "live", label: "Payroll reviewer" }] }))
           yield* TestHost.settle
@@ -294,8 +294,8 @@ describe("AgentActionSpec.check", () => {
             completed: 0,
             error: { step: 0, message: "This review is no longer in the queue. Search again." }
           })
-          expect(play.root.model()!.deletedIds).toEqual([])
-          expect(play.root.model()!.selectedId).toBeNull()
+          expect(play.root.model()?.deletedIds).toEqual([])
+          expect(play.root.model()?.selectedId).toBeNull()
           expect(bridge.audit().at(-1)).toMatchObject({
             action: "deleteRow",
             confirmed: true,
@@ -318,7 +318,7 @@ describe("AgentActionSpec.check", () => {
             completed: 0,
             error: { step: 0, message: 'Action "deleteRow" is currently disabled' }
           })
-          expect(play.root.model()!.deletedIds).toEqual([])
+          expect(play.root.model()?.deletedIds).toEqual([])
           expect(bridge.audit().at(-1)).toMatchObject({
             action: "deleteRow",
             confirmed: true,
@@ -344,7 +344,7 @@ describe("AgentActionSpec.check", () => {
             state: [],
             error: { step: 0, message: 'No visible control matches ref "Review queue"' }
           })
-          expect(play.root.model()!.deletedIds).toEqual([])
+          expect(play.root.model()?.deletedIds).toEqual([])
           expect(bridge.audit().at(-1)).toMatchObject({
             action: "deleteRow",
             confirmed: true,
@@ -409,7 +409,11 @@ describe("AgentActionSpec.check", () => {
 
   test("refuses dispatch when target label or confirmation text changes independently during async approval, and checks hidden before reading label", () => {
     const LabelOnlyContract = AgentBridge.expose(QueueWidget, {
-      label: (model) => model.rows[0]!.label,
+      label: (model) => {
+        const first = model.rows[0]
+        if (first === undefined) throw new Error("label must not be read when hidden")
+        return first.label
+      },
       hidden: (model) => model.rows.length === 0,
       state: (model) => ({ deletedIds: model.deletedIds }),
       actions: {
@@ -428,7 +432,7 @@ describe("AgentActionSpec.check", () => {
         deleteActive: {
           description: "Delete the active project",
           args: Schema.Struct({}),
-          confirm: (model) => `Delete ${model.rows[0]!.label}`,
+          confirm: (model) => `Delete ${model.rows[0]?.label ?? "unknown"}`,
           toMessage: () => QueueMsg.Deleted({ id: "live" })
         }
       }
@@ -439,12 +443,11 @@ describe("AgentActionSpec.check", () => {
         yield* Effect.scoped(
           Effect.gen(function*() {
             const bridge = yield* AgentBridge.AgentBridgeService
-            const testHost = yield* TestHost.TestHost
+            const services = yield* Effect.context<TestHost.TestHost>()
             const play = yield* HtmlPlay.make(QueueWidget, {})
             yield* AgentBridge.attachTestRoot(bridge, play.root)
 
-            const settle = () =>
-              Effect.runPromise(TestHost.settle.pipe(Effect.provideService(TestHost.TestHost, testHost)))
+            const settle = () => Effect.runPromiseWith(services)(TestHost.settle)
 
             play.root.send(QueueMsg.SetRows({ rows: [{ id: "live", label: "Project A" }] }))
             yield* TestHost.settle
@@ -470,7 +473,7 @@ describe("AgentActionSpec.check", () => {
                   'Approval for "deleteActive" on "Project A" is stale because the target changed. Ask the person again.'
               }
             })
-            expect(play.root.model()!.deletedIds).toEqual([])
+            expect(play.root.model()?.deletedIds).toEqual([])
             expect(bridge.audit().at(-1)).toMatchObject({
               label: "Project A",
               action: "deleteActive",
@@ -496,7 +499,7 @@ describe("AgentActionSpec.check", () => {
               state: [],
               error: { step: 0, message: 'No visible control matches ref "Project B"' }
             })
-            expect(play.root.model()!.deletedIds).toEqual([])
+            expect(play.root.model()?.deletedIds).toEqual([])
             expect(bridge.audit().at(-1)).toMatchObject({
               label: "Project B",
               action: "deleteActive",
@@ -518,12 +521,11 @@ describe("AgentActionSpec.check", () => {
         yield* Effect.scoped(
           Effect.gen(function*() {
             const bridge = yield* AgentBridge.AgentBridgeService
-            const testHost = yield* TestHost.TestHost
+            const services = yield* Effect.context<TestHost.TestHost>()
             const play = yield* HtmlPlay.make(QueueWidget, {})
             yield* AgentBridge.attachTestRoot(bridge, play.root)
 
-            const settle = () =>
-              Effect.runPromise(TestHost.settle.pipe(Effect.provideService(TestHost.TestHost, testHost)))
+            const settle = () => Effect.runPromiseWith(services)(TestHost.settle)
 
             play.root.send(QueueMsg.SetRows({ rows: [{ id: "live", label: "Project A" }] }))
             yield* TestHost.settle
@@ -549,7 +551,7 @@ describe("AgentActionSpec.check", () => {
                   'Approval for "deleteActive" on "Project panel" is stale because the target changed. Ask the person again.'
               }
             })
-            expect(play.root.model()!.deletedIds).toEqual([])
+            expect(play.root.model()?.deletedIds).toEqual([])
             expect(bridge.audit().at(-1)).toMatchObject({
               label: "Project panel",
               action: "deleteActive",

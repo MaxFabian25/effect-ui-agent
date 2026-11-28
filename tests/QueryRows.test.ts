@@ -3,7 +3,7 @@ import { UiSchema } from "@effect/ui"
 import { Html } from "@effect/ui/html"
 import { HtmlLocator, HtmlPlay } from "@effect/ui/html/testing"
 import { TestHost } from "@effect/ui/testing"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Result, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import * as AgentBridge from "../src/index.ts"
 
@@ -82,11 +82,13 @@ test("WebMCP finds public rows in a closed mounted list without downloading its 
     expect(yield* Effect.promise(() => tool.execute({ ...request, offset: 1 }))).toEqual({
       status: "ready", rows: [{ id: "review-55", label: "Payroll reviewer" }], more: false
     })
-    yield* Effect.promise(async () => {
-      for (const input of [{ text: "Payroll" }, { ...request, limit: 51 }, { ...request, offset: -1 }, { ...request, extra: true }]) {
-        await expect(tool.execute(input)).rejects.toThrow(Schema.SchemaError)
+    for (const input of [{ text: "Payroll" }, { ...request, limit: 51 }, { ...request, offset: -1 }, { ...request, extra: true }]) {
+      const outcome = yield* Effect.tryPromise(() => tool.execute(input)).pipe(Effect.result)
+      expect(Result.isFailure(outcome)).toBe(true)
+      if (Result.isFailure(outcome)) {
+        expect(outcome.failure.cause).toBeInstanceOf(Schema.SchemaError)
       }
-    })
+    }
 
     const before = bridge.snapshot()
     const readyEmpty = { status: "ready", rows: [], more: false } satisfies AgentBridge.RowQueryResult

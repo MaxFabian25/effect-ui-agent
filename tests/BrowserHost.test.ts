@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { MessageLog, UiSchema } from "@effect/ui"
 import { BrowserHost, Html } from "@effect/ui/html"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Predicate, Schema } from "effect"
 import { GlobalWindow } from "happy-dom"
 import * as AgentBridge from "../src/index.ts"
 import { assertActionDiscoverable, assertActionNotDiscoverable } from "../src/testing.ts"
@@ -88,7 +88,7 @@ const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A
     "queueMicrotask"
   ] as const
   const prev: Record<string, unknown> = {}
-  for (const k of keys) prev[k] = (globalThis as Record<string, unknown>)[k]
+  for (const k of keys) prev[k] = globalThis[k]
   Object.assign(globalThis, {
     window: win,
     document: win.document,
@@ -120,13 +120,16 @@ const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A
   }
 }
 
-const nextFrame = () => new Promise<void>((resolve) => setTimeout(resolve, 25))
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 25)
+  })
 
 describe("BrowserHost.mountEffect + nested children + Controllables chaining", () => {
   test("dispatches to a specific nested child via BrowserHost.Controllables and removes unmounted children", async () => {
-    await withHappyDom(async (win) => {
-      const container = win.document.createElement("div")
-      win.document.body.appendChild(container)
+    await withHappyDom(async () => {
+      const container = globalThis.document.createElement("div")
+      globalThis.document.body.appendChild(container)
 
       const upstreamEntries: Array<MessageLog.Entry> = []
       const upstreamRoots: Array<string> = []
@@ -157,7 +160,7 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
         Effect.scoped(
           Effect.gen(function*() {
             const bridge = yield* AgentBridge.AgentBridgeService
-            yield* BrowserHost.mountEffect(Workspace, {}, container as unknown as globalThis.Element)
+            yield* BrowserHost.mountEffect(Workspace, {}, container)
             yield* Effect.promise(nextFrame)
 
             // Both nested children AND parent are discovered automatically
@@ -176,7 +179,7 @@ describe("BrowserHost.mountEffect + nested children + Controllables chaining", (
 
             // Upstream DevTools-like layer ALSO received Controllable registration & MessageLog entries
             expect(upstreamRoots).toEqual(["/Workspace"])
-            expect(upstreamEntries.some((e) => e._tag === "Mounted" && e.path === "/Workspace/ProjectSettings[beta]")).toBe(true)
+            expect(upstreamEntries.some((e) => Predicate.isTagged(e, "Mounted") && e.path === "/Workspace/ProjectSettings[beta]")).toBe(true)
 
             // Ambiguous label ("Project settings") fails clearly naming both nested child refs
             const ambiguous = yield* bridge.act({

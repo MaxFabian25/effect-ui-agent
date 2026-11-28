@@ -1,10 +1,32 @@
-import { type Component, type MessageLog, UiSchema } from "@effect/ui"
+import type { Component, MessageLog } from "@effect/ui"
+import { UiSchema } from "@effect/ui"
 import { BrowserHost, Html } from "@effect/ui/html"
 import { describe, expect, it } from "bun:test"
-import { Effect, Redacted, Schema } from "effect"
+import { Data, Effect, Predicate, Redacted, Schema } from "effect"
 import { GlobalWindow } from "happy-dom"
 import * as AgentBridge from "../src/AgentBridge.js"
 import { assertActionDiscoverable, assertActionNotDiscoverable } from "../src/testing.js"
+
+const TestMessageLog = Data.taggedEnum<MessageLog.Mounted | MessageLog.Update | MessageLog.Unmounted>()
+const TestSource = Data.taggedEnum<MessageLog.Source>()
+const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const decodeUnknownRecord = Schema.decodeUnknownSync(UnknownRecordSchema)
+
+const readStringField = (value: unknown, key: string): string => {
+  const record = decodeUnknownRecord(value)
+  const field = record[key]
+  if (typeof field !== "string") {
+    throw new Error(`Expected string property "${key}"`)
+  }
+  return field
+}
+
+const readSnapshotLabels = (value: unknown): ReadonlyArray<string> => {
+  if (!Array.isArray(value)) {
+    throw new Error("Expected snapshot array")
+  }
+  return value.map((entry) => readStringField(entry, "label"))
+}
 
 let testSeq = 0
 const mountEntry = (
@@ -12,57 +34,57 @@ const mountEntry = (
   path: string,
   component: Component.Any,
   model: unknown
-): MessageLog.Mounted => ({
-  _tag: "Mounted",
-  seq: ++testSeq,
-  at: 0,
-  session: "test",
-  instance,
-  path,
-  component,
-  props: {},
-  model,
-  commands: [],
-  events: [],
-  adopted: false
-})
+): MessageLog.Mounted =>
+  TestMessageLog.Mounted({
+    seq: ++testSeq,
+    at: 0,
+    session: "test",
+    instance,
+    path,
+    component,
+    props: {},
+    model,
+    commands: [],
+    events: [],
+    adopted: false
+  })
 
 const updateEntry = (
   instance: number,
   path: string,
   component: Component.Any,
   model: unknown
-): MessageLog.Update => ({
-  _tag: "Update",
-  seq: ++testSeq,
-  at: 0,
-  session: "test",
-  instance,
-  path,
-  component,
-  source: { _tag: "Dispatch" },
-  message: {},
-  props: {},
-  model,
-  commands: [],
-  events: [],
-  lists: [],
-  sends: []
-})
+): MessageLog.Update =>
+  TestMessageLog.Update({
+    seq: ++testSeq,
+    at: 0,
+    session: "test",
+    instance,
+    path,
+    component,
+    source: TestSource.Dispatch(),
+    message: {},
+    props: {},
+    model,
+    commands: [],
+    events: [],
+    lists: [],
+    sends: []
+  })
 
 const unmountEntry = (
   instance: number,
   path: string,
   component: Component.Any
-): MessageLog.Unmounted => ({
-  _tag: "Unmounted",
-  seq: ++testSeq,
-  at: 0,
-  session: "test",
-  instance,
-  path,
-  component
-})
+): MessageLog.Unmounted =>
+  TestMessageLog.Unmounted({
+    seq: ++testSeq,
+    at: 0,
+    session: "test",
+    instance,
+    path,
+    component
+  })
 
 const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A> => {
   const win = new GlobalWindow({ url: "http://localhost/" })
@@ -92,7 +114,7 @@ const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A
   ] as const
   const prev: Record<string, unknown> = {}
   for (const k of keys) {
-    prev[k] = (globalThis as Record<string, unknown>)[k]
+    prev[k] = globalThis[k]
   }
   Object.assign(globalThis, {
     window: win,
@@ -125,7 +147,10 @@ const withHappyDom = async <A>(fn: (win: GlobalWindow) => Promise<A>): Promise<A
   }
 }
 
-const nextFrame = () => new Promise<void>((resolve) => setTimeout(resolve, 25))
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 25)
+  })
 
 const TabBarMsg = UiSchema.TaggedEnum({
   Select: { tab: Schema.Literals(["general", "security"]) }
@@ -292,9 +317,9 @@ const EdgeShell = Html.component({
 
 describe("Closed-container discovery and fail-closed auto-reveal", () => {
   it("discovers revealedBy controls with empty state, keeps plain hidden controls invisible, and auto-reveals nested Tab -> Accordion -> Field in one act()", async () => {
-    await withHappyDom(async (win) => {
-      const container = win.document.createElement("div")
-      win.document.body.appendChild(container)
+    await withHappyDom(async () => {
+      const container = globalThis.document.createElement("div")
+      globalThis.document.body.appendChild(container)
 
       let activeTab: "general" | "security" = "general"
       let accordionOpen = false
@@ -378,7 +403,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
         Effect.scoped(
           Effect.gen(function*() {
             const bridge = yield* AgentBridge.AgentBridgeService
-            yield* BrowserHost.mountEffect(SettingsShell, {}, container as unknown as Element)
+            yield* BrowserHost.mountEffect(SettingsShell, {}, container)
             yield* Effect.promise(nextFrame)
 
             // Discovery: Private Control is invisible; Webhook URL is discoverable with empty state
@@ -428,9 +453,9 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
   })
 
   it("fails closed when a reveal action does not unhide the target or when reveal refs form a cycle", async () => {
-    await withHappyDom(async (win) => {
-      const container = win.document.createElement("div")
-      win.document.body.appendChild(container)
+    await withHappyDom(async () => {
+      const container = globalThis.document.createElement("div")
+      globalThis.document.body.appendChild(container)
 
       const bridgeLayer = AgentBridge.layer({
         contracts: [
@@ -491,7 +516,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
         Effect.scoped(
           Effect.gen(function*() {
             const bridge = yield* AgentBridge.AgentBridgeService
-            yield* BrowserHost.mountEffect(EdgeShell, {}, container as unknown as Element)
+            yield* BrowserHost.mountEffect(EdgeShell, {}, container)
             yield* Effect.promise(nextFrame)
 
             const stuckRes = yield* bridge.act({ steps: [{ ref: "Stuck Target", action: "go" }] })
@@ -591,7 +616,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
     bridge.attachDispatcher({
       dispatch: (instance, _path, msg) =>
         Effect.sync(() => {
-          if (instance === 1 && (msg as { _tag: string })._tag === "Open") {
+          if (instance === 1 && Predicate.isTagged(msg, "Open")) {
             openCount++
             isOpen = true
             bridge.messageLog.record(updateEntry(1, "/App/GateContainer", ContainerComp, { open: true }))
@@ -732,7 +757,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
       dispatch: (instance, _path, msg) =>
         Effect.sync(() => {
           dispatchedInstances.push(instance)
-          if (instance === 10 && (msg as { _tag: string })._tag === "Open") {
+          if (instance === 10 && Predicate.isTagged(msg, "Open")) {
             bridge.messageLog.record(updateEntry(10, "/App/RemountDialog", DialogComp, { open: true }))
             // Remount child with brand-new instance ID 99 at the same path
             bridge.messageLog.record(unmountEntry(20, "/App/RemountField", FieldComp))
@@ -741,11 +766,11 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
             )
             return true
           }
-          if (instance === 99 && (msg as { _tag: string })._tag === "Set") {
+          if (instance === 99 && Predicate.isTagged(msg, "Set")) {
             bridge.messageLog.record(
               updateEntry(99, "/App/RemountField", FieldComp, {
                 visible: true,
-                value: (msg as { value: string }).value
+                value: readStringField(msg, "value")
               })
             )
             return true
@@ -892,7 +917,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
     bridge.attachDispatcher({
       dispatch: (instance, _path, msg) =>
         Effect.sync(() => {
-          if (instance === 1 && (msg as { _tag: string })._tag === "Unlock") {
+          if (instance === 1 && Predicate.isTagged(msg, "Unlock")) {
             unlocked = true
             bridge.messageLog.record(updateEntry(1, "/App/Vault", VaultComp, { unlocked: true }))
             bridge.messageLog.record(
@@ -1276,14 +1301,14 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
     bridge.attachDispatcher({
       dispatch: (instance, _path, msg) =>
         Effect.sync(() => {
-          if (instance === 1 && (msg as { _tag: string })._tag === "Open") {
+          if (instance === 1 && Predicate.isTagged(msg, "Open")) {
             isOpen = true
             bridge.messageLog.record(updateEntry(1, "/App/WebhookSettings", VisibleSettings, { open: true }))
             return true
           }
-          if (instance === 2 && (msg as { _tag: string })._tag === "SetUrl") {
+          if (instance === 2 && Predicate.isTagged(msg, "SetUrl")) {
             bridge.messageLog.record(
-              updateEntry(2, "/App/WebhookField", ExactHidden, { url: (msg as { url: string }).url })
+              updateEntry(2, "/App/WebhookField", ExactHidden, { url: readStringField(msg, "url") })
             )
             return true
           }
@@ -1368,16 +1393,17 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
     expect(syncCalls).toBe(1)
 
     // WebMCP ui_snapshot accepts includeHidden
-    const snapshotTool = bridge.tools().find((t) => t.name === "ui_snapshot")!
+    const snapshotTool = bridge.tools().find((t) => t.name === "ui_snapshot")
+    if (snapshotTool === undefined) throw new Error("Expected ui_snapshot tool")
     expect(snapshotTool.inputSchema).toMatchObject({
       type: "object",
       properties: { includeHidden: { type: "boolean" } },
       additionalProperties: false
     })
-    const webMcpDefault = (await snapshotTool.execute({})) as ReadonlyArray<AgentBridge.SnapshotEntry>
-    expect(webMcpDefault.map((e) => e.label)).toEqual(["Snap Container", "Snap Hidden"])
-    const webMcpVisibleOnly = (await snapshotTool.execute({ includeHidden: false })) as ReadonlyArray<AgentBridge.SnapshotEntry>
-    expect(webMcpVisibleOnly.map((e) => e.label)).toEqual(["Snap Container"])
+    const webMcpDefault = readSnapshotLabels(await snapshotTool.execute({}))
+    expect(webMcpDefault).toEqual(["Snap Container", "Snap Hidden"])
+    const webMcpVisibleOnly = readSnapshotLabels(await snapshotTool.execute({ includeHidden: false }))
+    expect(webMcpVisibleOnly).toEqual(["Snap Container"])
 
     // Testing helpers default to includeHidden: false and allow opting in with includeHidden: true
     assertActionDiscoverable(bridge, { label: "Snap Container", action: "open" })
@@ -1479,7 +1505,7 @@ describe("Closed-container discovery and fail-closed auto-reveal", () => {
               return true
             }
             if (instance === 2) {
-              innerExpandedWith = (msg as { section: string }).section
+              innerExpandedWith = readStringField(msg, "section")
               bridge.messageLog.record(updateEntry(2, "/App/Inner", InnerComp, { section: innerExpandedWith }))
               return true
             }
