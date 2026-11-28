@@ -1,7 +1,7 @@
 import { Component, MessageLog } from "@effect/ui"
 import { BrowserHost } from "@effect/ui/html"
 import { TestHost } from "@effect/ui/testing"
-import { Context, Effect, Layer, Redacted, Schema, Scope } from "effect"
+import { Cause, Context, Effect, Layer, Redacted, Schema, Scope } from "effect"
 
 export type ActionSource = "user" | "agent"
 
@@ -130,8 +130,10 @@ export interface ActStateEntry {
 
 export interface ActRevealRecord {
   readonly container: string
+  readonly containerRef: string
   readonly action: string
   readonly target: string
+  readonly targetRef: string
 }
 
 export interface ActResult {
@@ -189,27 +191,64 @@ const scrubRedacted = (value: unknown): unknown => {
   return value
 }
 
-const labelOf = (contract: AgentContract, model: unknown): string =>
-  typeof contract.label === "function" ? contract.label(model) : contract.label
+interface InternalResolvedRevealSpec {
+  readonly container: string
+  readonly action: string
+  readonly rawArgs?: Record<string, unknown> | undefined
+  readonly description?: string | undefined
+}
+
+type RevealResolution =
+  | { readonly _tag: "None" }
+  | { readonly _tag: "Ok"; readonly spec: InternalResolvedRevealSpec }
+  | { readonly _tag: "Error" }
+
+type HiddenCheck = "visible" | "hidden" | "error"
+
+const checkHidden = (contract: AgentContract, model: unknown): HiddenCheck => {
+  if (contract.hidden === undefined) return "visible"
+  try {
+    return contract.hidden(model) === true ? "hidden" : "visible"
+  } catch {
+    return "error"
+  }
+}
+
+const labelOfSafe = (contract: AgentContract, model: unknown, fallback: string): string => {
+  if (typeof contract.label !== "function") return contract.label
+  try {
+    return contract.label(model)
+  } catch {
+    return fallback
+  }
+}
 
 const resolveRevealOf = (
   contract: AgentContract,
   model: unknown
-): ResolvedRevealSpec | undefined => {
-  const raw =
-    typeof contract.revealedBy === "function"
-      ? contract.revealedBy(model)
-      : contract.revealedBy
-  if (raw === undefined) return undefined
-  const container =
-    typeof raw.container === "function" ? raw.container(model) : raw.container
-  const args =
-    typeof raw.args === "function" ? raw.args(model) : raw.args
-  return {
-    container,
-    action: raw.action,
-    ...(args !== undefined ? { args: scrubRedacted(args) as Record<string, unknown> } : {}),
-    ...(raw.description !== undefined ? { description: raw.description } : {})
+): RevealResolution => {
+  if (contract.revealedBy === undefined) return { _tag: "None" }
+  try {
+    const raw =
+      typeof contract.revealedBy === "function"
+        ? contract.revealedBy(model)
+        : contract.revealedBy
+    if (raw === undefined) return { _tag: "None" }
+    const container =
+      typeof raw.container === "function" ? raw.container(model) : raw.container
+    const rawArgs =
+      typeof raw.args === "function" ? raw.args(model) : raw.args
+    return {
+      _tag: "Ok",
+      spec: {
+        container,
+        action: raw.action,
+        ...(rawArgs !== undefined ? { rawArgs } : {}),
+        ...(raw.description !== undefined ? { description: raw.description } : {})
+      }
+    }
+  } catch {
+    return { _tag: "Error" }
   }
 }
 
@@ -313,67 +352,132 @@ export const make = (options: {
     }
   }
 
-  const visibleEntries = (): ReadonlyArray<{
+  type VisibleEntry = {
     readonly tracked: TrackedInstance
     readonly contract: AgentContract
     readonly label: string
-  }> => {
-    syncAll()
-    const out: Array<{
-      readonly tracked: TrackedInstance
-      readonly contract: AgentContract
-      readonly label: string
-    }> = []
+  }
+
+  type HiddenRevealEntry = {
+    readonly tracked: TrackedInstance
+    readonly contract: AgentContract
+    readonly label: string
+    readonly revealedBy: RevealResolution
+  }
+
+  const visibleEntries = (sync = true): ReadonlyArray<VisibleEntry> => {
+    if (sync) syncAll()
+    const out: Array<VisibleEntry> = []
     for (const tracked of instances.values()) {
       const contract = byComponent.get(tracked.componentRef)
       if (contract === undefined) continue
-      if (contract.hidden?.(tracked.model) === true) continue
-      out.push({ tracked, contract, label: labelOf(contract, tracked.model) })
+      if (checkHidden(contract, tracked.model) !== "visible") continue
+      out.push({ tracked, contract, label: labelOfSafe(contract, tracked.model, tracked.component) })
     }
     return out
   }
 
-  const discoverableHiddenEntries = (): ReadonlyArray<{
-    readonly tracked: TrackedInstance
-    readonly contract: AgentContract
-    readonly label: string
-    readonly revealedBy: ResolvedRevealSpec
-  }> => {
-    syncAll()
-    const out: Array<{
-      readonly tracked: TrackedInstance
-      readonly contract: AgentContract
-      readonly label: string
-      readonly revealedBy: ResolvedRevealSpec
-    }> = []
+  const hiddenRevealEntries = (sync = true): ReadonlyArray<HiddenRevealEntry> => {
+    if (sync) syncAll()
+    const out: Array<HiddenRevealEntry> = []
     for (const tracked of instances.values()) {
       const contract = byComponent.get(tracked.componentRef)
       if (contract === undefined) continue
-      if (contract.hidden?.(tracked.model) !== true) continue
+      if (checkHidden(contract, tracked.model) !== "hidden") continue
       const revealedBy = resolveRevealOf(contract, tracked.model)
-      if (revealedBy === undefined) continue
-      out.push({ tracked, contract, label: labelOf(contract, tracked.model), revealedBy })
+      if (revealedBy._tag === "None") continue
+      out.push({ tracked, contract, label: labelOfSafe(contract, tracked.model, tracked.component), revealedBy })
     }
     return out
   }
 
-  const visibleState = (): ReadonlyArray<ActStateEntry> =>
-    visibleEntries().map(({ tracked, contract, label }) => ({
+  const matchExactByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
+    entries: ReadonlyArray<T>,
+    ref: string
+  ): ReadonlyArray<T> =>
+    entries.filter((v) => v.tracked.path === ref || v.label === ref)
+
+  const matchSubstringByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
+    entries: ReadonlyArray<T>,
+    ref: string
+  ): ReadonlyArray<T> => {
+    const needle = ref.toLowerCase()
+    return entries.filter((v) => v.label.toLowerCase().includes(needle))
+  }
+
+  const isRevealActionSecret = (containerRef: string, actionName: string): boolean => {
+    const allEntries: Array<VisibleEntry> = []
+    for (const tracked of instances.values()) {
+      const contract = byComponent.get(tracked.componentRef)
+      if (contract === undefined) continue
+      allEntries.push({
+        tracked,
+        contract,
+        label: labelOfSafe(contract, tracked.model, tracked.component)
+      })
+    }
+    const exact = matchExactByRef(allEntries, containerRef)
+    const matches = exact.length > 0 ? exact : matchSubstringByRef(allEntries, containerRef)
+    return matches.some((m) => m.contract.actions[actionName]?.secret === true)
+  }
+
+  const toPublicRevealSpec = (spec: InternalResolvedRevealSpec): ResolvedRevealSpec => {
+    const secret = isRevealActionSecret(spec.container, spec.action)
+    return {
+      container: spec.container,
+      action: spec.action,
+      ...(!secret && spec.rawArgs !== undefined
+        ? { args: scrubRedacted(spec.rawArgs) as Record<string, unknown> }
+        : {}),
+      ...(spec.description !== undefined ? { description: spec.description } : {})
+    }
+  }
+
+  const safeStateOf = (contract: AgentContract, model: unknown): Record<string, unknown> => {
+    try {
+      return scrubRedacted(contract.state(model)) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+
+  const visibleState = (sync = true): ReadonlyArray<ActStateEntry> =>
+    visibleEntries(sync).map(({ tracked, contract, label }) => ({
       ref: tracked.path,
       label,
-      state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>
+      state: safeStateOf(contract, tracked.model)
     }))
 
-  const snapshotActionsOf = (contract: AgentContract, model: unknown): ReadonlyArray<SnapshotAction> => {
+  const snapshotActionsOf = (
+    contract: AgentContract,
+    model: unknown,
+    isHidden: boolean
+  ): ReadonlyArray<SnapshotAction> => {
     const actions: Array<SnapshotAction> = []
     for (const [name, spec] of Object.entries(contract.actions)) {
-      if (spec.enabled && !spec.enabled(model)) continue
-      const confirm =
-        typeof spec.confirm === "string"
-          ? spec.confirm
-          : typeof spec.confirm === "function"
-            ? spec.confirm(model, {})
-            : undefined
+      if (!isHidden && spec.enabled !== undefined) {
+        let enabled = false
+        try {
+          enabled = spec.enabled(model)
+        } catch {
+          enabled = false
+        }
+        if (!enabled) continue
+      }
+      let confirm: string | undefined
+      if (typeof spec.confirm === "string") {
+        confirm = spec.confirm
+      } else if (typeof spec.confirm === "function") {
+        if (isHidden) {
+          confirm = "Confirmation required after reveal"
+        } else {
+          try {
+            confirm = spec.confirm(model, {})
+          } catch {
+            confirm = "Confirmation required"
+          }
+        }
+      }
       actions.push({
         name,
         description: spec.description,
@@ -387,28 +491,31 @@ export const make = (options: {
 
   const snapshot: AgentBridge["snapshot"] = (snapOptions) => {
     const includeHidden = snapOptions?.includeHidden ?? true
-    const visible: Array<SnapshotEntry> = visibleEntries().map(({ tracked, contract, label }) => ({
+    syncAll()
+    const visible: Array<SnapshotEntry> = visibleEntries(false).map(({ tracked, contract, label }) => ({
       ref: tracked.path,
       instance: tracked.instance,
       component: tracked.component,
       label,
-      state: scrubRedacted(contract.state(tracked.model)) as Record<string, unknown>,
-      actions: snapshotActionsOf(contract, tracked.model)
+      state: safeStateOf(contract, tracked.model),
+      actions: snapshotActionsOf(contract, tracked.model, false)
     }))
     if (!includeHidden) return visible
 
-    const hidden: Array<SnapshotEntry> = discoverableHiddenEntries().map(
-      ({ tracked, contract, label, revealedBy }) => ({
+    const hidden: Array<SnapshotEntry> = []
+    for (const { tracked, contract, label, revealedBy } of hiddenRevealEntries(false)) {
+      if (revealedBy._tag !== "Ok") continue
+      hidden.push({
         ref: tracked.path,
         instance: tracked.instance,
         component: tracked.component,
         label,
         state: {},
-        actions: snapshotActionsOf(contract, tracked.model),
+        actions: snapshotActionsOf(contract, tracked.model, true),
         hidden: true,
-        revealedBy
+        revealedBy: toPublicRevealSpec(revealedBy.spec)
       })
-    )
+    }
     return [...visible, ...hidden]
   }
 
@@ -453,31 +560,47 @@ export const make = (options: {
     return { status: "ready", rows, more: false }
   }
 
-  const dispatchTo = (instance: number, path: string, message: unknown): Effect.Effect<boolean> =>
+  const dispatchTo = (
+    instance: number,
+    path: string,
+    message: unknown
+  ): Effect.Effect<{ readonly ok: true; readonly dispatched: boolean } | { readonly ok: false; readonly error: string }> =>
     Effect.gen(function*() {
       for (const root of controllables) {
-        const controlled = root.instance(instance)
-        if (controlled !== undefined) {
-          const result = yield* controlled.dispatch(message)
-          return result._tag === "Updated" || (result._tag === "Ignored" && result.reason === "unchanged")
+        const exit = yield* Effect.suspend(() => {
+          const controlled = root.instance(instance)
+          if (controlled === undefined) return Effect.succeed<boolean | undefined>(undefined)
+          return controlled.dispatch(message).pipe(
+            Effect.map(
+              (result) =>
+                result._tag === "Updated" || (result._tag === "Ignored" && result.reason === "unchanged")
+            )
+          )
+        }).pipe(Effect.exit)
+        if (exit._tag === "Failure") {
+          if (Cause.hasInterruptsOnly(exit.cause)) {
+            return yield* Effect.failCause(exit.cause)
+          }
+          return { ok: false as const, error: `Dispatch failed for "${path}"` }
+        }
+        if (exit.value !== undefined) {
+          return { ok: true as const, dispatched: exit.value }
         }
       }
       for (const dispatcher of dispatchers) {
-        const ok = yield* dispatcher.dispatch(instance, path, message)
-        if (ok) return true
+        const exit = yield* Effect.suspend(() => dispatcher.dispatch(instance, path, message)).pipe(Effect.exit)
+        if (exit._tag === "Failure") {
+          if (Cause.hasInterruptsOnly(exit.cause)) {
+            return yield* Effect.failCause(exit.cause)
+          }
+          return { ok: false as const, error: `Dispatch failed for "${path}"` }
+        }
+        if (exit.value) {
+          return { ok: true as const, dispatched: true }
+        }
       }
-      return false
+      return { ok: true as const, dispatched: false }
     })
-
-  const matchByRef = <T extends { readonly tracked: TrackedInstance; readonly label: string }>(
-    entries: ReadonlyArray<T>,
-    ref: string
-  ): ReadonlyArray<T> => {
-    const exact = entries.filter((v) => v.tracked.path === ref || v.label === ref)
-    return exact.length > 0
-      ? exact
-      : entries.filter((v) => v.label.toLowerCase().includes(ref.toLowerCase()))
-  }
 
   const MAX_REVEAL_DEPTH = 4
 
@@ -495,12 +618,98 @@ export const make = (options: {
         error: { step, message }
       })
 
+      const preValidateHiddenAction = (
+        target: HiddenRevealEntry,
+        actionName: string,
+        rawArgs: unknown
+      ): Effect.Effect<string | undefined> =>
+        Effect.gen(function*() {
+          const { tracked, contract, label } = target
+          const actionSpec = contract.actions[actionName]
+          if (actionSpec === undefined) {
+            const allowed = Object.keys(contract.actions).join(", ")
+            return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`
+          }
+
+          const decoded = yield* Schema.decodeUnknownEffect(actionSpec.args)(rawArgs ?? {}, {
+            onExcessProperty: "error"
+          }).pipe(Effect.result)
+
+          if (decoded._tag === "Failure") {
+            const reason = `Invalid args for "${actionName}": ${String(decoded.failure)}`
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+              confirmed: false,
+              ok: false,
+              error: reason
+            })
+            return reason
+          }
+
+          if (actionSpec.confirm !== undefined && allow === undefined) {
+            const safeArgs = actionSpec.secret === true ? "[Redacted]" : scrubRedacted(decoded.success)
+            const reason =
+              typeof actionSpec.confirm === "string"
+                ? `Needs a person: ${actionSpec.confirm}`
+                : `Needs a person: confirmation required for "${actionName}" on "${label}"`
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: safeArgs,
+              confirmed: false,
+              ok: false,
+              error: reason
+            })
+            return reason
+          }
+
+          return undefined
+        })
+
+      const findVisibleTarget = (hiddenTarget: HiddenRevealEntry): VisibleEntry | undefined => {
+        const updatedInstance = instances.get(hiddenTarget.tracked.instance)
+        if (
+          updatedInstance !== undefined &&
+          checkHidden(hiddenTarget.contract, updatedInstance.model) === "visible"
+        ) {
+          return {
+            tracked: updatedInstance,
+            contract: hiddenTarget.contract,
+            label: labelOfSafe(hiddenTarget.contract, updatedInstance.model, updatedInstance.component)
+          }
+        }
+        const remounted = visibleEntries(false).filter(
+          (entry) =>
+            entry.tracked.instance !== hiddenTarget.tracked.instance &&
+            entry.tracked.path === hiddenTarget.tracked.path &&
+            entry.tracked.componentRef === hiddenTarget.tracked.componentRef
+        )
+        return remounted.length === 1 ? remounted[0] : undefined
+      }
+
+      const findTrackedInstance = (hiddenTarget: HiddenRevealEntry): TrackedInstance | undefined => {
+        const direct = instances.get(hiddenTarget.tracked.instance)
+        if (direct !== undefined) return direct
+        const remounted: Array<TrackedInstance> = []
+        for (const tracked of instances.values()) {
+          if (
+            tracked.path === hiddenTarget.tracked.path &&
+            tracked.componentRef === hiddenTarget.tracked.componentRef
+          ) {
+            remounted.push(tracked)
+          }
+        }
+        return remounted.length === 1 ? remounted[0] : undefined
+      }
+
       const executeSingleAction = (
-        target: {
-          readonly tracked: TrackedInstance
-          readonly contract: AgentContract
-          readonly label: string
-        },
+        target: VisibleEntry,
         stepRef: string,
         actionName: string,
         rawArgs: unknown
@@ -513,18 +722,26 @@ export const make = (options: {
             return `Unknown action "${actionName}" on "${label}". Allowed: ${allowed}`
           }
 
-          if (actionSpec.enabled && !actionSpec.enabled(tracked.model)) {
-            auditLog.push({
-              ref: tracked.path,
-              label,
-              action: actionName,
-              secret: actionSpec.secret === true,
-              args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
-              confirmed: false,
-              ok: false,
-              error: `Action "${actionName}" is currently disabled`
-            })
-            return `Action "${actionName}" is currently disabled`
+          if (actionSpec.enabled !== undefined) {
+            let enabled = false
+            try {
+              enabled = actionSpec.enabled(tracked.model)
+            } catch {
+              enabled = false
+            }
+            if (!enabled) {
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: actionSpec.secret === true ? "[Redacted]" : scrubRedacted(rawArgs ?? {}),
+                confirmed: false,
+                ok: false,
+                error: `Action "${actionName}" is currently disabled`
+              })
+              return `Action "${actionName}" is currently disabled`
+            }
           }
 
           const decoded = yield* Schema.decodeUnknownEffect(actionSpec.args)(rawArgs ?? {}, {
@@ -550,7 +767,12 @@ export const make = (options: {
 
           const checkModel = (model: unknown): string | undefined => {
             if (actionSpec.check === undefined) return undefined
-            const rejection = actionSpec.check(model, decoded.success)
+            let rejection: string | undefined
+            try {
+              rejection = actionSpec.check(model, decoded.success)
+            } catch {
+              return `Action "${actionName}" cannot run with these arguments`
+            }
             if (rejection === undefined) return undefined
             const trimmed = rejection.trim()
             return trimmed.length > 0
@@ -573,10 +795,27 @@ export const make = (options: {
             return initialRejection
           }
 
-          const confirmText =
-            typeof actionSpec.confirm === "function"
-              ? actionSpec.confirm(tracked.model, decoded.success)
-              : actionSpec.confirm
+          let confirmText: string | undefined
+          if (typeof actionSpec.confirm === "string") {
+            confirmText = actionSpec.confirm
+          } else if (typeof actionSpec.confirm === "function") {
+            try {
+              confirmText = actionSpec.confirm(tracked.model, decoded.success)
+            } catch {
+              const reason = `Confirmation check failed for "${actionName}"`
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: safeArgs,
+                confirmed: false,
+                ok: false,
+                error: reason
+              })
+              return reason
+            }
+          }
 
           let confirmed = false
           if (confirmText !== undefined) {
@@ -594,8 +833,8 @@ export const make = (options: {
               })
               return reason
             }
-            const approved = yield* Effect.promise(() =>
-              Promise.resolve(
+            const approvalResult = yield* Effect.tryPromise(() =>
+              Promise.resolve().then(() =>
                 allow(
                   {
                     ref: tracked.path,
@@ -607,7 +846,22 @@ export const make = (options: {
                   { signal: callOptions?.signal }
                 )
               )
-            )
+            ).pipe(Effect.result)
+            if (approvalResult._tag === "Failure") {
+              const reason = "Confirmation handler failed"
+              auditLog.push({
+                ref: tracked.path,
+                label,
+                action: actionName,
+                secret: actionSpec.secret === true,
+                args: safeArgs,
+                confirmed: false,
+                ok: false,
+                error: reason
+              })
+              return reason
+            }
+            const approved = approvalResult.success === true
             if (!approved) {
               const reason = `Denied by person: ${confirmText}`
               auditLog.push({
@@ -627,22 +881,39 @@ export const make = (options: {
             syncAll()
             const current = instances.get(tracked.instance)
             let postConfirmFailure: string | undefined
-            if (current === undefined || contract.hidden?.(current.model) === true) {
+            if (current === undefined || checkHidden(contract, current.model) !== "visible") {
               postConfirmFailure = `No visible control matches ref "${stepRef}"`
-            } else if (actionSpec.enabled && !actionSpec.enabled(current.model)) {
-              postConfirmFailure = `Action "${actionName}" is currently disabled`
             } else {
-              const recheck = checkModel(current.model)
-              if (recheck !== undefined) {
-                postConfirmFailure = recheck
+              let stillEnabled = true
+              if (actionSpec.enabled !== undefined) {
+                try {
+                  stillEnabled = actionSpec.enabled(current.model)
+                } catch {
+                  stillEnabled = false
+                }
+              }
+              if (!stillEnabled) {
+                postConfirmFailure = `Action "${actionName}" is currently disabled`
               } else {
-                const currentLabel = labelOf(contract, current.model)
-                const currentConfirmText =
-                  typeof actionSpec.confirm === "function"
-                    ? actionSpec.confirm(current.model, decoded.success)
-                    : actionSpec.confirm
-                if (currentLabel !== label || currentConfirmText !== confirmText) {
-                  postConfirmFailure = `Approval for "${actionName}" on "${label}" is stale because the target changed. Ask the person again.`
+                const recheck = checkModel(current.model)
+                if (recheck !== undefined) {
+                  postConfirmFailure = recheck
+                } else {
+                  const currentLabel = labelOfSafe(contract, current.model, current.component)
+                  let currentConfirmText: string | undefined
+                  let confirmThrew = false
+                  if (typeof actionSpec.confirm === "string") {
+                    currentConfirmText = actionSpec.confirm
+                  } else if (typeof actionSpec.confirm === "function") {
+                    try {
+                      currentConfirmText = actionSpec.confirm(current.model, decoded.success)
+                    } catch {
+                      confirmThrew = true
+                    }
+                  }
+                  if (confirmThrew || currentLabel !== label || currentConfirmText !== confirmText) {
+                    postConfirmFailure = `Approval for "${actionName}" on "${label}" is stale because the target changed. Ask the person again.`
+                  }
                 }
               }
             }
@@ -661,9 +932,40 @@ export const make = (options: {
             }
           }
 
-          const msg = actionSpec.toMessage(decoded.success, { source: "agent" })
-          const dispatched = yield* dispatchTo(tracked.instance, tracked.path, msg)
-          if (!dispatched) {
+          let msg: unknown
+          try {
+            msg = actionSpec.toMessage(decoded.success, { source: "agent" })
+          } catch {
+            const reason = `Action "${actionName}" failed to build message`
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: safeArgs,
+              confirmed,
+              ok: false,
+              error: reason
+            })
+            return reason
+          }
+
+          const dispatchRes = yield* dispatchTo(tracked.instance, tracked.path, msg)
+          if (!dispatchRes.ok) {
+            const reason = `Dispatch failed for action "${actionName}" on "${tracked.path}"`
+            auditLog.push({
+              ref: tracked.path,
+              label,
+              action: actionName,
+              secret: actionSpec.secret === true,
+              args: safeArgs,
+              confirmed,
+              ok: false,
+              error: reason
+            })
+            return reason
+          }
+          if (!dispatchRes.dispatched) {
             const reason = `No mounted dispatcher accepted action "${actionName}" for "${tracked.path}"`
             auditLog.push({
               ref: tracked.path,
@@ -693,31 +995,54 @@ export const make = (options: {
       const resolveVisibleOrReveal = (
         ref: string,
         visited: ReadonlySet<number>,
-        depth: number
+        depth: number,
+        pendingAction: { readonly action: string; readonly rawArgs: unknown }
       ): Effect.Effect<
-        | { readonly ok: true; readonly target: { readonly tracked: TrackedInstance; readonly contract: AgentContract; readonly label: string } }
+        | { readonly ok: true; readonly target: VisibleEntry }
         | { readonly ok: false; readonly error: string }
       > =>
         Effect.gen(function*() {
-          const visibleMatches = matchByRef(visibleEntries(), ref)
-          if (visibleMatches.length === 1) {
-            return { ok: true as const, target: visibleMatches[0]! }
+          syncAll()
+          const visible = visibleEntries(false)
+          const hidden = hiddenRevealEntries(false)
+
+          const exactVisible = matchExactByRef(visible, ref)
+          if (exactVisible.length === 1) {
+            return { ok: true as const, target: exactVisible[0]! }
           }
-          if (visibleMatches.length > 1) {
-            const refs = visibleMatches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+          if (exactVisible.length > 1) {
+            const refs = exactVisible.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
             return { ok: false as const, error: `Ambiguous ref "${ref}": matched ${refs}` }
           }
 
-          const hiddenMatches = matchByRef(discoverableHiddenEntries(), ref)
-          if (hiddenMatches.length === 0) {
-            return { ok: false as const, error: `No visible control matches ref "${ref}"` }
-          }
-          if (hiddenMatches.length > 1) {
-            const refs = hiddenMatches.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+          let hiddenTarget: HiddenRevealEntry | undefined
+          const exactHidden = matchExactByRef(hidden, ref)
+          if (exactHidden.length === 1) {
+            hiddenTarget = exactHidden[0]!
+          } else if (exactHidden.length > 1) {
+            const refs = exactHidden.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
             return { ok: false as const, error: `Ambiguous hidden ref "${ref}": matched ${refs}` }
+          } else {
+            const subVisible = matchSubstringByRef(visible, ref)
+            if (subVisible.length === 1) {
+              return { ok: true as const, target: subVisible[0]! }
+            }
+            if (subVisible.length > 1) {
+              const refs = subVisible.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+              return { ok: false as const, error: `Ambiguous ref "${ref}": matched ${refs}` }
+            }
+
+            const subHidden = matchSubstringByRef(hidden, ref)
+            if (subHidden.length === 0) {
+              return { ok: false as const, error: `No visible control matches ref "${ref}"` }
+            }
+            if (subHidden.length > 1) {
+              const refs = subHidden.map((m) => `${m.label} (${m.tracked.path})`).join(", ")
+              return { ok: false as const, error: `Ambiguous hidden ref "${ref}": matched ${refs}` }
+            }
+            hiddenTarget = subHidden[0]!
           }
 
-          const hiddenTarget = hiddenMatches[0]!
           if (visited.has(hiddenTarget.tracked.instance)) {
             return {
               ok: false as const,
@@ -731,59 +1056,146 @@ export const make = (options: {
             }
           }
 
+          const preValidationError = yield* preValidateHiddenAction(
+            hiddenTarget,
+            pendingAction.action,
+            pendingAction.rawArgs
+          )
+          if (preValidationError !== undefined) {
+            return { ok: false as const, error: preValidationError }
+          }
+
+          if (hiddenTarget.revealedBy._tag !== "Ok") {
+            const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`
+            const actionSpec = hiddenTarget.contract.actions[pendingAction.action]
+            auditLog.push({
+              ref: hiddenTarget.tracked.path,
+              label: hiddenTarget.label,
+              action: pendingAction.action,
+              secret: actionSpec?.secret === true,
+              args: actionSpec?.secret === true ? "[Redacted]" : scrubRedacted(pendingAction.rawArgs ?? {}),
+              confirmed: false,
+              ok: false,
+              error: reason
+            })
+            return { ok: false as const, error: reason }
+          }
+
+          const initialReveal = hiddenTarget.revealedBy.spec
           const nextVisited = new Set(visited)
           nextVisited.add(hiddenTarget.tracked.instance)
 
+          const revealsBefore = reveals.length
           const containerRes = yield* resolveVisibleOrReveal(
-            hiddenTarget.revealedBy.container,
+            initialReveal.container,
             nextVisited,
-            depth + 1
+            depth + 1,
+            { action: initialReveal.action, rawArgs: initialReveal.rawArgs }
           )
           if (!containerRes.ok) {
             return containerRes
           }
 
+          let effectiveContainer = containerRes.target
+          let effectiveReveal = initialReveal
+
+          if (reveals.length > revealsBefore) {
+            syncAll()
+            const alreadyVisible = findVisibleTarget(hiddenTarget)
+            if (alreadyVisible !== undefined) {
+              return { ok: true as const, target: alreadyVisible }
+            }
+
+            const refreshedInstance = findTrackedInstance(hiddenTarget)
+            if (refreshedInstance === undefined) {
+              return {
+                ok: false as const,
+                error: `No visible control matches ref "${ref}"`
+              }
+            }
+
+            const refreshedReveal = resolveRevealOf(hiddenTarget.contract, refreshedInstance.model)
+            if (refreshedReveal._tag === "Error") {
+              const reason = `Failed to resolve reveal metadata for "${hiddenTarget.label}"`
+              const actionSpec = hiddenTarget.contract.actions[pendingAction.action]
+              auditLog.push({
+                ref: refreshedInstance.path,
+                label: hiddenTarget.label,
+                action: pendingAction.action,
+                secret: actionSpec?.secret === true,
+                args: actionSpec?.secret === true ? "[Redacted]" : scrubRedacted(pendingAction.rawArgs ?? {}),
+                confirmed: false,
+                ok: false,
+                error: reason
+              })
+              return { ok: false as const, error: reason }
+            }
+            if (refreshedReveal._tag === "None") {
+              return {
+                ok: false as const,
+                error: `No visible control matches ref "${ref}"`
+              }
+            }
+
+            effectiveReveal = refreshedReveal.spec
+            if (effectiveReveal.container !== initialReveal.container) {
+              const nextContainerRes = yield* resolveVisibleOrReveal(
+                effectiveReveal.container,
+                nextVisited,
+                depth + 1,
+                { action: effectiveReveal.action, rawArgs: effectiveReveal.rawArgs }
+              )
+              if (!nextContainerRes.ok) {
+                return nextContainerRes
+              }
+              effectiveContainer = nextContainerRes.target
+              syncAll()
+              const nowVisible = findVisibleTarget(hiddenTarget)
+              if (nowVisible !== undefined) {
+                return { ok: true as const, target: nowVisible }
+              }
+            }
+          }
+
           const revealErr = yield* executeSingleAction(
-            containerRes.target,
-            hiddenTarget.revealedBy.container,
-            hiddenTarget.revealedBy.action,
-            hiddenTarget.revealedBy.args ?? {}
+            effectiveContainer,
+            effectiveReveal.container,
+            effectiveReveal.action,
+            effectiveReveal.rawArgs ?? {}
           )
           if (revealErr !== undefined) {
             return { ok: false as const, error: revealErr }
           }
 
-          reveals.push({
-            container: containerRes.target.label,
-            action: hiddenTarget.revealedBy.action,
-            target: hiddenTarget.label
-          })
-
           syncAll()
-          const updatedInstance = instances.get(hiddenTarget.tracked.instance)
-          if (
-            updatedInstance === undefined ||
-            hiddenTarget.contract.hidden?.(updatedInstance.model) === true
-          ) {
+          const revealedTarget = findVisibleTarget(hiddenTarget)
+          if (revealedTarget === undefined) {
             return {
               ok: false as const,
-              error: `Reveal action "${hiddenTarget.revealedBy.action}" on "${containerRes.target.label}" did not make "${hiddenTarget.label}" visible`
+              error: `Reveal action "${effectiveReveal.action}" on "${effectiveContainer.label}" did not make "${hiddenTarget.label}" visible`
             }
           }
 
+          reveals.push({
+            container: effectiveContainer.label,
+            containerRef: effectiveContainer.tracked.path,
+            action: effectiveReveal.action,
+            target: revealedTarget.label,
+            targetRef: revealedTarget.tracked.path
+          })
+
           return {
             ok: true as const,
-            target: {
-              tracked: updatedInstance,
-              contract: hiddenTarget.contract,
-              label: labelOf(hiddenTarget.contract, updatedInstance.model)
-            }
+            target: revealedTarget
           }
         })
 
       for (let i = 0; i < input.steps.length; i++) {
         const step = input.steps[i]!
-        const resolved = yield* resolveVisibleOrReveal(step.ref, new Set(), 0)
+        const resolved = yield* resolveVisibleOrReveal(step.ref, new Set(), 0, {
+          action: step.action,
+          rawArgs: step.args
+        })
         if (!resolved.ok) {
           return fail(i, resolved.error)
         }
@@ -811,9 +1223,18 @@ export const make = (options: {
         description:
           "List visible interactive controls (plus hidden controls inside closed containers declaring revealedBy metadata with empty state), their safe state, and their allowed actions with JSON Schemas. " +
           `Call once to discover refs and action schemas; subsequent ${prefix}act calls auto-reveal closed containers and return updated state directly.`,
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        inputSchema: {
+          type: "object",
+          properties: {
+            includeHidden: { type: "boolean" }
+          },
+          additionalProperties: false
+        },
         annotations: { readOnlyHint: true },
-        execute: async () => snapshot()
+        execute: async (input) => {
+          const opts = (input ?? {}) as { includeHidden?: boolean }
+          return snapshot({ includeHidden: opts.includeHidden })
+        }
       },
       {
         name: `${prefix}query`,
